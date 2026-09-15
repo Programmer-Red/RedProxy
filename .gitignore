@@ -1,0 +1,14 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+data/*
+!data/.gitkeep
+*.log
+npm-debug.log*
+.DS_Store
+*.pem
+*.crx
+*.zip

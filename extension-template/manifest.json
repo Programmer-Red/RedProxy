@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "RedProxy Temporary Proxy",
+  "description": "Temporarily applies a RedProxy node and self-uninstalls when the one-time session ends.",
+  "version": "0.1.0",
+  "permissions": ["proxy", "storage", "alarms"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "RedProxy Temporary Proxy"
+  }
+}

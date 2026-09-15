@@ -1,0 +1,9 @@
+node_modules
+dist
+data
+.git
+.env
+*.pem
+*.crx
+*.zip
+coverage

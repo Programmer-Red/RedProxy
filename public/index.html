@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RedProxy 临时浏览器代理</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>RedProxy</h1>
+        <p>TOTP 验证后生成一次性 CRX3，扩展临时接管 Chrome 代理并在会话结束时自我卸载。</p>
+      </div>
+      <div id="top-actions" class="top-actions hidden">
+        <span id="auth-status" class="pill">已登录</span>
+        <button id="logout-button" class="secondary" type="button">退出</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section id="login-view" class="card">
+        <h2>TOTP 登录</h2>
+        <p class="muted">
+          请输入认证器中的 6 位动态验证码。首次使用时，在服务器上查看
+          <code>data/totp-secret.txt</code>，或查看启动日志中的 <code>otpauth://</code> URI 并导入认证器。
+        </p>
+        <form id="login-form" autocomplete="one-time-code">
+          <label for="totp-token">动态验证码</label>
+          <input id="totp-token" name="token" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="000000" required />
+          <button type="submit">登录</button>
+        </form>
+        <p id="login-error" class="error" role="alert"></p>
+      </section>
+
+      <div id="main-view" class="hidden">
+        <section class="card">
+          <div class="section-head">
+            <h2>使用区</h2>
+            <span id="session-status" class="pill">无会话</span>
+          </div>
+          <div class="grid two">
+            <div>
+              <label for="node-select">代理节点</label>
+              <select id="node-select"></select>
+
+              <label for="ttl-select">本次会话有效期</label>
+              <select id="ttl-select"></select>
+
+              <div class="button-row">
+                <button id="generate-crx" type="button">生成临时 CRX</button>
+                <button id="download-zip" class="secondary" type="button">下载 ZIP fallback</button>
+              </div>
+              <div class="button-row">
+                <button id="close-session" class="danger" type="button">关闭当前会话</button>
+              </div>
+              <p id="session-message" class="muted" role="status"></p>
+            </div>
+            <div>
+              <h3>安装步骤</h3>
+              <ol class="steps">
+                <li>在下方节点列表中添加 HTTP / HTTPS / SOCKS5 代理节点。</li>
+                <li>选择节点和有效期，点击“生成临时 CRX”。</li>
+                <li>在 Chrome 的 <code>chrome://extensions</code> 打开开发者模式，手动安装下载的 CRX。</li>
+                <li>若 CRX 被 Windows/macOS 限制，下载 ZIP，解压后在开发者模式下“加载已解压的扩展程序”。</li>
+                <li>页面关闭会尽力撤销会话；最终由服务端 TTL / 空闲超时兜底。</li>
+              </ol>
+              <p class="warn">
+                注意：CRX 下载文件可能留在下载目录；扩展自卸载不能保证删除下载文件。Chrome 代理设置仅作用于浏览器，不等于系统所有程序都走代理。
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="section-head">
+            <h2>管理区</h2>
+            <button id="show-totp-uri" class="secondary" type="button">查看 TOTP 绑定 URI</button>
+          </div>
+          <p id="totp-uri" class="mono muted"></p>
+
+          <h3>节点</h3>
+          <form id="node-form" class="grid node-form">
+            <input name="name" placeholder="名称，例如 Tokyo" required maxlength="64" />
+            <select name="scheme" required>
+              <option value="http">http</option>
+              <option value="https">https</option>
+              <option value="socks5">socks5</option>
+            </select>
+            <input name="host" placeholder="主机，例如 127.0.0.1" required maxlength="253" />
+            <input name="port" type="number" min="1" max="65535" placeholder="端口" required />
+            <input name="username" placeholder="用户名（可选）" maxlength="256" autocomplete="off" />
+            <input name="password" type="password" placeholder="密码（可选，仅保存在服务端）" maxlength="256" autocomplete="new-password" />
+            <button type="submit">添加节点</button>
+          </form>
+          <p id="node-error" class="error" role="alert"></p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>名称</th><th>协议</th><th>地址</th><th>状态</th><th>操作</th></tr>
+              </thead>
+              <tbody id="nodes-body"></tbody>
+            </table>
+          </div>
+
+          <div class="section-head">
+            <h3>活跃会话</h3>
+            <span id="max-devices" class="pill">最大并发设备：-</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>设备</th><th>节点</th><th>状态</th><th>剩余</th><th>到期时间</th><th>操作</th></tr>
+              </thead>
+              <tbody id="sessions-body"></tbody>
+            </table>
+          </div>
+          <p id="admin-error" class="error" role="alert"></p>
+        </section>
+      </div>
+    </main>
+  </body>
+</html>
