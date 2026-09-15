@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -5,7 +6,7 @@ import * as OTPAuth from 'otpauth';
 import request from 'supertest';
 import { createApp } from '../server/src/app';
 import { toTestConfig } from '../server/src/config';
-import type { AppConfig } from '../server/src/types';
+import type { AppConfig, NodeRecord, ProxyScheme } from '../server/src/types';
 
 export const TEST_TOTP_SECRET = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
 
@@ -47,9 +48,26 @@ export async function loginAgent(app: Parameters<typeof request.agent>[0], times
   return agent;
 }
 
+export function sampleNode(overrides: Partial<NodeRecord> = {}): NodeRecord {
+  return {
+    id: 'tokyo-1',
+    name: 'Tokyo',
+    kind: 'proxy',
+    scheme: 'http' as ProxyScheme,
+    host: '127.0.0.1',
+    port: 10809,
+    username: null,
+    password: null,
+    enabled: true,
+    createdAt: Date.now(),
+    ...overrides,
+  };
+}
+
 export const SAMPLE_NODE = {
   id: 'tokyo-1',
   name: 'Tokyo',
+  kind: 'proxy' as const,
   scheme: 'http' as const,
   host: '127.0.0.1',
   port: 10809,
@@ -57,3 +75,7 @@ export const SAMPLE_NODE = {
   password: null,
   enabled: true,
 };
+
+export function ownerHash(value = 'owner'): string {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}

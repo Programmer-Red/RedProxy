@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AppConfig } from './types';
+import type { AppConfig, AuthMode } from './types';
 
 function intFromEnv(value: string | undefined, fallback: number, min: number, max: number): number {
   if (value === undefined || value.trim() === '') return fallback;
@@ -19,6 +19,13 @@ function boolFromEnv(value: string | undefined, fallback: boolean): boolean {
   throw new Error(`Invalid boolean value "${value}"`);
 }
 
+function authModeFromEnv(value: string | undefined): AuthMode {
+  if (value === undefined || value.trim() === '') return 'totp';
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'totp' || normalized === 'totp_password') return normalized;
+  throw new Error(`Invalid AUTH_MODE "${value}" (expected totp or totp_password)`);
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const port = intFromEnv(env.PORT, 3000, 1, 65535);
   const dataDir = path.resolve(env.DATA_DIR || './data');
@@ -29,21 +36,28 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   return {
     nodeEnv,
+    host: env.HOST || '0.0.0.0',
     port,
     publicBaseUrl: (env.PUBLIC_BASE_URL || `http://localhost:${port}`).replace(/\/+$/, ''),
     dataDir,
     crxPrivateKeyPath,
-    sessionTtlSeconds: intFromEnv(env.SESSION_TTL_SECONDS, 3600, 60, 86400),
+    sessionTtlSeconds: intFromEnv(env.SESSION_TTL_SECONDS, 3600, 60, 7 * 86400),
     sessionIdleSeconds: intFromEnv(env.SESSION_IDLE_SECONDS, 90, 15, 3600),
+    enrollmentTtlSeconds: intFromEnv(env.ENROLLMENT_TTL_SECONDS, 120, 30, 3600),
+    tokenGraceSeconds: intFromEnv(env.TOKEN_GRACE_SECONDS, 30, 0, 600),
     maxConcurrentDevices: intFromEnv(env.MAX_CONCURRENT_DEVICES, 2, 1, 1000),
     cookieSecure: boolFromEnv(env.COOKIE_SECURE, cookieSecureDefault),
     authSessionTtlSeconds: intFromEnv(env.AUTH_SESSION_TTL_SECONDS, 12 * 3600, 300, 30 * 86400),
     loginMaxAttempts: intFromEnv(env.LOGIN_MAX_ATTEMPTS, 5, 1, 1000),
     loginWindowSeconds: intFromEnv(env.LOGIN_WINDOW_SECONDS, 300, 10, 86400),
+    loginBanSeconds: intFromEnv(env.LOGIN_BAN_SECONDS, 900, 0, 7 * 86400),
     crxKeyBits: intFromEnv(env.CRX_KEY_BITS, 2048, 2048, 4096),
     trustProxy: boolFromEnv(env.TRUST_PROXY, false),
     allowInsecureHttp: boolFromEnv(env.ALLOW_INSECURE_HTTP, false),
     adminTotpSecret: env.ADMIN_TOTP_SECRET?.trim() || null,
+    authMode: authModeFromEnv(env.AUTH_MODE),
+    staticDir: env.STATIC_DIR ? path.resolve(env.STATIC_DIR) : null,
+    templateDir: env.EXTENSION_TEMPLATE_DIR ? path.resolve(env.EXTENSION_TEMPLATE_DIR) : null,
   };
 }
 
@@ -54,20 +68,27 @@ export function ensureDataDir(config: AppConfig): void {
 export function toTestConfig(overrides: Partial<AppConfig> & { dataDir: string }): AppConfig {
   return {
     nodeEnv: 'test',
+    host: '127.0.0.1',
     port: 0,
     publicBaseUrl: 'http://127.0.0.1:3000',
     crxPrivateKeyPath: path.join(overrides.dataDir, 'redproxy.pem'),
     sessionTtlSeconds: 600,
     sessionIdleSeconds: 90,
+    enrollmentTtlSeconds: 120,
+    tokenGraceSeconds: 30,
     maxConcurrentDevices: 2,
     cookieSecure: false,
     authSessionTtlSeconds: 3600,
     loginMaxAttempts: 5,
     loginWindowSeconds: 300,
+    loginBanSeconds: 300,
     crxKeyBits: 2048,
     trustProxy: false,
     allowInsecureHttp: true,
     adminTotpSecret: null,
+    authMode: 'totp',
+    staticDir: null,
+    templateDir: null,
     ...overrides,
   };
 }

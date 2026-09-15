@@ -18,7 +18,8 @@
     config: 'redproxy_runtime_config',
     lastHeartbeat: 'redproxy_last_heartbeat',
     expiresAt: 'redproxy_expires_at',
-    applied: 'redproxy_temp_applied'
+    applied: 'redproxy_temp_applied',
+    accessToken: 'redproxy_access_token'
   };
 
   var cleanupPromise = null;
@@ -140,7 +141,7 @@
 
   function buildProxyConfig(node) {
     var scheme = node && node.scheme ? node.scheme : 'http';
-    if (scheme !== 'http' && scheme !== 'https' && scheme !== 'socks5') {
+    if (scheme !== 'http' && scheme !== 'https' && scheme !== 'socks4' && scheme !== 'socks5') {
       scheme = 'http';
     }
     return {
@@ -314,6 +315,14 @@
       heartbeatFailures = 0;
       state.lastHeartbeatAt = Date.now();
       if (data && data.expiresAt) state.expiresAt = data.expiresAt;
+      // The enrollment token embedded in the CRX is single-use. The server
+      // rotates it on first heartbeat (and on later heartbeats) and the rotated
+      // token lives only in chrome.storage.local, never in the downloaded file.
+      if (data && data.token && typeof data.token === 'string') {
+        CONFIG.extensionToken = data.token;
+        await storageSet({ [STORAGE_KEYS.accessToken]: data.token });
+        log('rotated one-time extension token');
+      }
       await storageSet({
         [STORAGE_KEYS.lastHeartbeat]: state.lastHeartbeatAt,
         [STORAGE_KEYS.expiresAt]: state.expiresAt
@@ -360,7 +369,8 @@
         STORAGE_KEYS.config,
         STORAGE_KEYS.lastHeartbeat,
         STORAGE_KEYS.expiresAt,
-        STORAGE_KEYS.applied
+        STORAGE_KEYS.applied,
+        STORAGE_KEYS.accessToken
       ]);
     } catch (err) {
       warn('local storage cleanup failed', err && err.message);
@@ -391,10 +401,18 @@
       stored = await storageGet([
         STORAGE_KEYS.originalProxy,
         STORAGE_KEYS.lastHeartbeat,
-        STORAGE_KEYS.expiresAt
+        STORAGE_KEYS.expiresAt,
+        STORAGE_KEYS.accessToken
       ]);
     } catch (err) {
       warn('could not read stored state', err && err.message);
+    }
+
+    if (stored[STORAGE_KEYS.accessToken] && typeof stored[STORAGE_KEYS.accessToken] === 'string') {
+      // Reuse the rotated token from a previous service-worker lifetime. The
+      // CRX-embedded enrollment token stays single-use and is never replayed.
+      CONFIG.extensionToken = stored[STORAGE_KEYS.accessToken];
+      log('reusing rotated access token');
     }
 
     state.originalProxy = state.originalProxy || stored[STORAGE_KEYS.originalProxy] || null;

@@ -3,15 +3,15 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>RedProxy 临时浏览器代理</title>
+    <title>RedProxy 控制台</title>
     <link rel="stylesheet" href="/styles.css" />
     <script src="/app.js" defer></script>
   </head>
   <body>
     <header class="topbar">
-      <div>
+      <div class="brand">
         <h1>RedProxy</h1>
-        <p>TOTP 验证后生成一次性 CRX3，扩展临时接管 Chrome 代理并在会话结束时自我卸载。</p>
+        <p>TOTP 验证 → 一次性 CRX3 → 临时接管 Chrome 代理 → 自动恢复并卸载</p>
       </div>
       <div id="top-actions" class="top-actions hidden">
         <span id="auth-status" class="pill">已登录</span>
@@ -19,106 +19,324 @@
       </div>
     </header>
 
-    <main class="layout">
-      <section id="login-view" class="card">
-        <h2>TOTP 登录</h2>
-        <p class="muted">
-          请输入认证器中的 6 位动态验证码。首次使用时，在服务器上查看
-          <code>data/totp-secret.txt</code>，或查看启动日志中的 <code>otpauth://</code> URI 并导入认证器。
-        </p>
-        <form id="login-form" autocomplete="one-time-code">
-          <label for="totp-token">动态验证码</label>
-          <input id="totp-token" name="token" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="000000" required />
-          <button type="submit">登录</button>
-        </form>
-        <p id="login-error" class="error" role="alert"></p>
+    <!-- ------------------------------------------------------------- login -->
+    <section id="login-view" class="card narrow">
+      <h2>管理员登录</h2>
+      <p class="muted">输入认证器中的 6 位 TOTP 动态码<span id="password-hint"></span>。</p>
+      <form id="login-form">
+        <label for="totp-token">TOTP 动态码</label>
+        <input id="totp-token" name="token" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="000000" required />
+        <div id="password-field" class="hidden">
+          <label for="admin-password">管理员密码</label>
+          <input id="admin-password" name="password" type="password" autocomplete="current-password" maxlength="512" />
+        </div>
+        <button type="submit">登录</button>
+      </form>
+      <p id="login-error" class="error" role="alert"></p>
+      <p class="muted small">
+        首次部署：在服务器的 <code>&lt;data-dir&gt;/settings.json</code> 中保存了随机生成的 TOTP 密钥；
+        登录后在「安全」页可查看二维码、重新生成密钥或设置密码。
+      </p>
+    </section>
+
+    <!-- ------------------------------------------------------------- app -->
+    <div id="main-view" class="hidden">
+      <nav class="tabs" id="tabs">
+        <button data-tab="use" class="tab active">使用</button>
+        <button data-tab="nodes" class="tab">节点</button>
+        <button data-tab="xray" class="tab">Xray</button>
+        <button data-tab="sessions" class="tab">会话</button>
+        <button data-tab="security" class="tab">安全</button>
+        <button data-tab="transfer" class="tab">导入导出</button>
+        <button data-tab="logs" class="tab">日志</button>
+      </nav>
+
+      <!-- use -->
+      <section class="card tab-panel" data-panel="use">
+        <div class="section-head">
+          <h2>使用区</h2>
+          <span id="session-status" class="pill">无会话</span>
+        </div>
+        <div class="grid two">
+          <div>
+            <label for="node-select">代理节点</label>
+            <select id="node-select"></select>
+            <label for="ttl-select">本次会话有效期</label>
+            <select id="ttl-select"></select>
+            <div class="button-row">
+              <button id="generate-crx" type="button">生成临时 CRX</button>
+              <button id="download-zip" class="secondary" type="button">下载 ZIP fallback</button>
+              <button id="close-session" class="danger" type="button">关闭当前会话</button>
+            </div>
+            <p id="session-message" class="muted" role="status"></p>
+            <p class="warn small">
+              CRX 中的 token 是<b>一次性</b>的：第一次心跳后立即被服务端轮换，旧 token 永久失效。即使扩展卸载失败，
+              会话结束后所有 token 也会失效，下载的安装包无法再次使用。
+            </p>
+          </div>
+          <div>
+            <h3>安装步骤</h3>
+            <ol class="steps">
+              <li>在「节点」页添加 HTTP/HTTPS/SOCKS4/SOCKS5 节点，或导入 Xray 分享链接。</li>
+              <li>选择节点和有效期，生成临时 CRX。</li>
+              <li>Chrome 打开 <code>chrome://extensions</code>，开启开发者模式，手动安装 CRX。</li>
+              <li>被 Windows/macOS 限制时，下载 ZIP，解压后“加载已解压的扩展程序”。</li>
+              <li>扩展每 15 秒心跳一次；页面关闭/主动关闭/超时后自动恢复代理并卸载。</li>
+            </ol>
+          </div>
+        </div>
       </section>
 
-      <div id="main-view" class="hidden">
-        <section class="card">
-          <div class="section-head">
-            <h2>使用区</h2>
-            <span id="session-status" class="pill">无会话</span>
-          </div>
+      <!-- nodes -->
+      <section class="card tab-panel hidden" data-panel="nodes">
+        <h2>节点管理</h2>
+        <form id="node-form" class="grid">
           <div class="grid two">
             <div>
-              <label for="node-select">代理节点</label>
-              <select id="node-select"></select>
-
-              <label for="ttl-select">本次会话有效期</label>
-              <select id="ttl-select"></select>
-
-              <div class="button-row">
-                <button id="generate-crx" type="button">生成临时 CRX</button>
-                <button id="download-zip" class="secondary" type="button">下载 ZIP fallback</button>
-              </div>
-              <div class="button-row">
-                <button id="close-session" class="danger" type="button">关闭当前会话</button>
-              </div>
-              <p id="session-message" class="muted" role="status"></p>
+              <label for="node-kind">节点类型</label>
+              <select id="node-kind" name="kind">
+                <option value="proxy">传统代理（扩展直连）</option>
+                <option value="xray">Xray 节点（需本地 Inbound）</option>
+              </select>
+              <label for="node-name">名称</label>
+              <input id="node-name" name="name" required maxlength="64" placeholder="Tokyo" />
             </div>
             <div>
-              <h3>安装步骤</h3>
-              <ol class="steps">
-                <li>在下方节点列表中添加 HTTP / HTTPS / SOCKS5 代理节点。</li>
-                <li>选择节点和有效期，点击“生成临时 CRX”。</li>
-                <li>在 Chrome 的 <code>chrome://extensions</code> 打开开发者模式，手动安装下载的 CRX。</li>
-                <li>若 CRX 被 Windows/macOS 限制，下载 ZIP，解压后在开发者模式下“加载已解压的扩展程序”。</li>
-                <li>页面关闭会尽力撤销会话；最终由服务端 TTL / 空闲超时兜底。</li>
-              </ol>
-              <p class="warn">
-                注意：CRX 下载文件可能留在下载目录；扩展自卸载不能保证删除下载文件。Chrome 代理设置仅作用于浏览器，不等于系统所有程序都走代理。
-              </p>
+              <label for="node-enabled">启用</label>
+              <select id="node-enabled" name="enabled"><option value="true">启用</option><option value="false">停用</option></select>
             </div>
           </div>
-        </section>
 
-        <section class="card">
-          <div class="section-head">
-            <h2>管理区</h2>
-            <button id="show-totp-uri" class="secondary" type="button">查看 TOTP 绑定 URI</button>
-          </div>
-          <p id="totp-uri" class="mono muted"></p>
+          <fieldset id="proxy-fields">
+            <legend>传统代理</legend>
+            <div class="grid two">
+              <div>
+                <label for="proxy-scheme">协议</label>
+                <select id="proxy-scheme" name="scheme">
+                  <option value="http">http</option>
+                  <option value="https">https</option>
+                  <option value="socks4">socks4</option>
+                  <option value="socks5">socks5</option>
+                </select>
+                <label for="proxy-host">主机</label>
+                <input id="proxy-host" name="host" placeholder="127.0.0.1" maxlength="253" />
+                <label for="proxy-port">端口</label>
+                <input id="proxy-port" name="port" type="number" min="1" max="65535" placeholder="8080" />
+              </div>
+              <div>
+                <label for="proxy-username">用户名（可选）</label>
+                <input id="proxy-username" name="username" maxlength="256" autocomplete="off" />
+                <label for="proxy-password">密码（可选，仅服务端保存）</label>
+                <input id="proxy-password" name="password" type="password" maxlength="512" autocomplete="new-password" />
+              </div>
+            </div>
+          </fieldset>
 
-          <h3>节点</h3>
-          <form id="node-form" class="grid node-form">
-            <input name="name" placeholder="名称，例如 Tokyo" required maxlength="64" />
-            <select name="scheme" required>
-              <option value="http">http</option>
-              <option value="https">https</option>
-              <option value="socks5">socks5</option>
+          <fieldset id="xray-fields" class="hidden">
+            <legend>Xray 节点</legend>
+            <div class="grid three">
+              <div>
+                <label for="xray-protocol">协议</label>
+                <select id="xray-protocol" name="xrayProtocol">
+                  <option value="vless">vless</option>
+                  <option value="vmess">vmess</option>
+                  <option value="trojan">trojan</option>
+                  <option value="shadowsocks">shadowsocks</option>
+                </select>
+                <label for="xray-host">服务器地址</label>
+                <input id="xray-host" name="xrayHost" placeholder="example.com" maxlength="253" />
+                <label for="xray-port">服务器端口</label>
+                <input id="xray-port" name="xrayPort" type="number" min="1" max="65535" placeholder="443" />
+                <label for="xray-uuid">UUID / 用户 ID</label>
+                <input id="xray-uuid" name="xrayUuid" maxlength="128" />
+                <label for="xray-password">密码 / Trojan 密码</label>
+                <input id="xray-password" name="xrayPassword" type="password" maxlength="512" autocomplete="new-password" />
+                <label for="xray-method">Shadowsocks 加密方式</label>
+                <input id="xray-method" name="xrayMethod" placeholder="aes-256-gcm" maxlength="128" />
+              </div>
+              <div>
+                <label for="xray-network">传输</label>
+                <select id="xray-network" name="xrayNetwork">
+                  <option value="tcp">tcp</option>
+                  <option value="ws">ws</option>
+                  <option value="grpc">grpc</option>
+                  <option value="http">http</option>
+                  <option value="xhttp">xhttp</option>
+                  <option value="kcp">kcp</option>
+                  <option value="quic">quic</option>
+                </select>
+                <label for="xray-security">传输安全</label>
+                <select id="xray-security" name="xraySecurity">
+                  <option value="">无</option>
+                  <option value="tls">tls</option>
+                  <option value="reality">reality</option>
+                </select>
+                <label for="xray-sni">SNI / serverName</label>
+                <input id="xray-sni" name="xraySni" maxlength="253" />
+                <label for="xray-host-header">Host 头</label>
+                <input id="xray-host-header" name="xrayHostHeader" maxlength="253" />
+                <label for="xray-path">路径 / serviceName</label>
+                <input id="xray-path" name="xrayPath" maxlength="1024" />
+                <label for="xray-flow">VLESS flow</label>
+                <input id="xray-flow" name="xrayFlow" placeholder="xtls-rprx-vision" maxlength="128" />
+                <label for="xray-alterid">VMess alterId</label>
+                <input id="xray-alterid" name="xrayAlterId" type="number" min="0" max="65535" value="0" />
+              </div>
+              <div>
+                <label for="xray-fingerprint">fingerprint</label>
+                <input id="xray-fingerprint" name="xrayFingerprint" placeholder="chrome" maxlength="64" />
+                <label for="xray-public-key">Reality publicKey</label>
+                <input id="xray-public-key" name="xrayPublicKey" maxlength="256" />
+                <label for="xray-short-id">Reality shortId</label>
+                <input id="xray-short-id" name="xrayShortId" maxlength="64" />
+                <label for="xray-spider-x">Reality spiderX</label>
+                <input id="xray-spider-x" name="xraySpiderX" maxlength="256" />
+                <label for="local-scheme">本地 Inbound 协议</label>
+                <select id="local-scheme" name="localScheme">
+                  <option value="socks5">socks5</option>
+                  <option value="http">http</option>
+                </select>
+                <label for="local-host">本地 Inbound 地址</label>
+                <input id="local-host" name="localHost" value="127.0.0.1" maxlength="253" />
+                <label for="local-port">本地 Inbound 端口</label>
+                <input id="local-port" name="localPort" type="number" min="1" max="65535" value="10808" />
+              </div>
+            </div>
+            <p class="muted small">
+              RedProxy 扩展只能连 HTTP/HTTPS/SOCKS4/SOCKS5。Xray 节点需要先在服务器上运行 Xray，导出配置并启动本地 Inbound；
+              扩展连接的是上面的本地 Inbound，而不是直接连接 Xray 远程端口。
+            </p>
+          </fieldset>
+
+          <div class="button-row"><button type="submit">添加节点</button></div>
+        </form>
+        <p id="node-error" class="error" role="alert"></p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>名称</th><th>类型</th><th>对外/远端</th><th>扩展连接</th><th>状态</th><th>操作</th></tr></thead>
+            <tbody id="nodes-body"></tbody>
+          </table>
+        </div>
+        <pre id="xray-config-output" class="code hidden"></pre>
+      </section>
+
+      <!-- xray -->
+      <section class="card tab-panel hidden" data-panel="xray">
+        <h2>Xray 分享链接导入</h2>
+        <p class="muted">支持 vless://、vmess://、trojan://、ss://（SIP002 与旧版 base64）以及 http(s)/socks4/socks5:// 代理链接，每行一条。</p>
+        <textarea id="xray-links" rows="8" placeholder="vless://...&#10;trojan://...&#10;ss://..."></textarea>
+        <div class="button-row">
+          <button id="import-links" type="button">导入分享链接</button>
+          <button id="export-links" class="secondary" type="button">导出为分享链接</button>
+        </div>
+        <p id="xray-message" class="muted" role="status"></p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>名称</th><th>协议</th><th>服务器</th><th>传输/安全</th><th>本地 Inbound</th><th>操作</th></tr></thead>
+            <tbody id="xray-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- sessions -->
+      <section class="card tab-panel hidden" data-panel="sessions">
+        <div class="section-head">
+          <h2>活跃会话</h2>
+          <span id="max-devices" class="pill">最大并发设备：-</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>设备</th><th>来源 IP</th><th>节点</th><th>状态</th><th>剩余</th><th>到期</th><th>操作</th></tr></thead>
+            <tbody id="sessions-body"></tbody>
+          </table>
+        </div>
+        <p id="admin-error" class="error" role="alert"></p>
+      </section>
+
+      <!-- security -->
+      <section class="card tab-panel hidden" data-panel="security">
+        <h2>安全设置</h2>
+        <div class="grid two">
+          <div class="panel">
+            <h3>认证方式</h3>
+            <label for="auth-mode">登录方式</label>
+            <select id="auth-mode">
+              <option value="totp">仅 TOTP</option>
+              <option value="totp_password">TOTP + 管理员密码</option>
             </select>
-            <input name="host" placeholder="主机，例如 127.0.0.1" required maxlength="253" />
-            <input name="port" type="number" min="1" max="65535" placeholder="端口" required />
-            <input name="username" placeholder="用户名（可选）" maxlength="256" autocomplete="off" />
-            <input name="password" type="password" placeholder="密码（可选，仅保存在服务端）" maxlength="256" autocomplete="new-password" />
-            <button type="submit">添加节点</button>
-          </form>
-          <p id="node-error" class="error" role="alert"></p>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr><th>名称</th><th>协议</th><th>地址</th><th>状态</th><th>操作</th></tr>
-              </thead>
-              <tbody id="nodes-body"></tbody>
-            </table>
+            <div class="button-row">
+              <button id="save-auth-mode" type="button">保存认证方式</button>
+            </div>
+            <h3>管理员密码</h3>
+            <input id="new-password" type="password" placeholder="至少 12 位，仅在你选择 TOTP+密码时使用" maxlength="512" autocomplete="new-password" />
+            <div class="button-row">
+              <button id="save-password" type="button">设置/修改密码</button>
+              <button id="clear-password" class="danger" type="button">清除密码</button>
+            </div>
+            <p id="security-message" class="muted" role="status"></p>
           </div>
+          <div class="panel qr-panel">
+            <h3>TOTP 绑定二维码</h3>
+            <p class="muted small">扫码导入认证器。不要把这个二维码或密钥泄露给他人。</p>
+            <img id="totp-qr" alt="TOTP QR code" />
+            <p id="totp-uri" class="mono small"></p>
+            <label for="current-totp">输入当前 6 位动态码以重新生成密钥</label>
+            <input id="current-totp" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="000000" />
+            <div class="button-row">
+              <button id="regenerate-totp" class="danger" type="button">随机生成新密钥</button>
+            </div>
+          </div>
+        </div>
 
-          <div class="section-head">
-            <h3>活跃会话</h3>
-            <span id="max-devices" class="pill">最大并发设备：-</span>
+        <h3>登录封禁</h3>
+        <p id="ban-config" class="muted small"></p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>IP</th><th>封禁截止</th><th>最近失败</th><th>操作</th></tr></thead>
+            <tbody id="bans-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- transfer -->
+      <section class="card tab-panel hidden" data-panel="transfer">
+        <h2>导入 / 导出</h2>
+        <div class="grid two">
+          <div class="panel">
+            <h3>导入</h3>
+            <p class="muted small">粘贴 RedProxy JSON（数组或 <code>{nodes:[...]}</code>），或每行一条 Xray/代理分享链接。</p>
+            <textarea id="import-text" rows="10" placeholder='[{"name":"Tokyo","kind":"proxy","scheme":"http","host":"127.0.0.1","port":10809}]'></textarea>
+            <div class="button-row">
+              <button id="import-button" type="button">导入</button>
+            </div>
+            <pre id="import-result" class="code hidden"></pre>
           </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr><th>设备</th><th>节点</th><th>状态</th><th>剩余</th><th>到期时间</th><th>操作</th></tr>
-              </thead>
-              <tbody id="sessions-body"></tbody>
-            </table>
+          <div class="panel">
+            <h3>导出</h3>
+            <label class="inline"><input id="export-secrets" type="checkbox" checked /> 导出时包含密码/凭据（敏感）</label>
+            <div class="button-row">
+              <button id="export-json" type="button">下载节点 JSON</button>
+              <button id="export-links-button" type="button">下载分享链接</button>
+            </div>
+            <p class="muted small">导出的 JSON 可用于迁移和备份。包含凭据时请妥善保管。</p>
+            <pre id="export-preview" class="code hidden"></pre>
           </div>
-          <p id="admin-error" class="error" role="alert"></p>
-        </section>
-      </div>
-    </main>
+        </div>
+      </section>
+
+      <!-- logs -->
+      <section class="card tab-panel hidden" data-panel="logs">
+        <div class="section-head">
+          <h2>审计日志</h2>
+          <button id="refresh-logs" class="secondary" type="button">刷新</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>时间</th><th>事件</th><th>会话</th><th>节点</th><th>IP</th><th>详情</th></tr></thead>
+            <tbody id="logs-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
   </body>
 </html>

@@ -1,122 +1,5 @@
 import crypto from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
-import * as OTPAuth from 'otpauth';
 import type { AppConfig, AuthSessionRecord } from './types';
-
-const BASE32_RE = /^[A-Z2-7]+=*$/;
-const TOTP_ISSUER = 'RedProxy';
-const TOTP_LABEL = 'admin';
-
-export interface TotpMaterial {
-  secretBase32: string;
-  otpauthUri: string;
-  generated: boolean;
-}
-
-export function normalizeTotpSecret(raw: string): string {
-  const normalized = raw.trim().replace(/\s+/g, '').toUpperCase();
-  if (normalized.length < 16 || normalized.length > 128 || !BASE32_RE.test(normalized)) {
-    throw new Error('ADMIN_TOTP_SECRET must be a Base32 string (A-Z, 2-7) with length 16..128');
-  }
-  return normalized;
-}
-
-export function buildOtpAuthUri(secretBase32: string): string {
-  const totp = new OTPAuth.TOTP({
-    issuer: TOTP_ISSUER,
-    label: TOTP_LABEL,
-    algorithm: 'SHA1',
-    digits: 6,
-    period: 30,
-    secret: OTPAuth.Secret.fromBase32(secretBase32),
-  });
-  return totp.toString();
-}
-
-export function loadOrCreateTotpSecret(config: AppConfig): TotpMaterial {
-  let secretBase32 = config.adminTotpSecret ? normalizeTotpSecret(config.adminTotpSecret) : '';
-  const secretFile = path.join(config.dataDir, 'totp-secret.txt');
-  let generated = false;
-
-  if (!secretBase32) {
-    if (fs.existsSync(secretFile)) {
-      secretBase32 = normalizeTotpSecret(fs.readFileSync(secretFile, 'utf8'));
-    } else {
-      secretBase32 = new OTPAuth.Secret({ size: 20 }).base32;
-      fs.writeFileSync(secretFile, `${secretBase32}\n`, { mode: 0o600 });
-      generated = true;
-      console.log(`[RedProxy] generated TOTP secret at ${secretFile}`);
-    }
-  }
-
-  const otpauthUri = buildOtpAuthUri(secretBase32);
-  if (generated) {
-    console.log(`[RedProxy] first-run TOTP setup URI (keep secret): ${otpauthUri}`);
-  }
-  return { secretBase32, otpauthUri, generated };
-}
-
-export function verifyTotp(secretBase32: string, token: string, timestamp?: number): boolean {
-  if (!/^\d{6}$/.test(token)) return false;
-  const totp = new OTPAuth.TOTP({
-    issuer: TOTP_ISSUER,
-    label: TOTP_LABEL,
-    algorithm: 'SHA1',
-    digits: 6,
-    period: 30,
-    secret: OTPAuth.Secret.fromBase32(secretBase32),
-  });
-  try {
-    const delta = totp.validate({ token, timestamp: timestamp === undefined ? Date.now() : timestamp, window: 1 });
-    return delta !== null;
-  } catch {
-    return false;
-  }
-}
-
-export interface LoginRateLimitResult {
-  allowed: boolean;
-  retryAfterSeconds: number;
-  attemptsRemaining: number;
-}
-
-export class LoginRateLimiter {
-  private attempts = new Map<string, number[]>();
-
-  constructor(
-    private readonly maxAttempts: number,
-    private readonly windowSeconds: number,
-    private readonly now: () => number = () => Date.now(),
-  ) {}
-
-  check(key: string): LoginRateLimitResult {
-    const cutoff = this.now() - this.windowSeconds * 1000;
-    const recent = (this.attempts.get(key) || []).filter(ts => ts > cutoff);
-    this.attempts.set(key, recent);
-    if (recent.length >= this.maxAttempts) {
-      const oldest = recent[0] ?? this.now();
-      return {
-        allowed: false,
-        retryAfterSeconds: Math.max(1, Math.ceil((oldest + this.windowSeconds * 1000 - this.now()) / 1000)),
-        attemptsRemaining: 0,
-      };
-    }
-    return { allowed: true, retryAfterSeconds: 0, attemptsRemaining: this.maxAttempts - recent.length };
-  }
-
-  recordFailure(key: string): void {
-    const now = this.now();
-    const cutoff = now - this.windowSeconds * 1000;
-    const recent = (this.attempts.get(key) || []).filter(ts => ts > cutoff);
-    recent.push(now);
-    this.attempts.set(key, recent);
-  }
-
-  clear(key: string): void {
-    this.attempts.delete(key);
-  }
-}
 
 export class AuthService {
   private sessions = new Map<string, AuthSessionRecord>();
@@ -162,10 +45,150 @@ export class AuthService {
     if (!token) return;
     this.sessions.delete(this.hashToken(token));
   }
+
+  revokeAll(): void {
+    this.sessions.clear();
+  }
+
+  sessionCount(): number {
+    return this.sessions.size;
+  }
 }
 
 export function extractBearerToken(header: string | undefined): string | null {
   if (!header) return null;
   const match = /^Bearer\s+([A-Za-z0-9._~+/=-]+)$/i.exec(header.trim());
   return match?.[1] ?? null;
+}
+
+export interface LoginAttemptDecision {
+  allowed: boolean;
+  retryAfterSeconds: number;
+  attemptsRemaining: number;
+  banned: boolean;
+}
+
+export interface BanEntry {
+  ip: string;
+  bannedUntil: number;
+  failures: number;
+  lastFailureAt: number;
+}
+
+interface AttemptState {
+  failures: number[];
+  bannedUntil: number;
+  lastFailureAt: number;
+}
+
+export class LoginRateLimiter {
+  private attempts = new Map<string, AttemptState>();
+
+  constructor(
+    private readonly maxAttempts: number,
+    private readonly windowSeconds: number,
+    private readonly banSeconds: number,
+    private readonly now: () => number = () => Date.now(),
+  ) {}
+
+  private stateFor(key: string): AttemptState {
+    const existing = this.attempts.get(key);
+    if (existing) return existing;
+    const created: AttemptState = { failures: [], bannedUntil: 0, lastFailureAt: 0 };
+    this.attempts.set(key, created);
+    return created;
+  }
+
+  private prune(state: AttemptState): void {
+    const cutoff = this.now() - this.windowSeconds * 1000;
+    state.failures = state.failures.filter(timestamp => timestamp > cutoff);
+  }
+
+  check(key: string): LoginAttemptDecision {
+    const now = this.now();
+    const state = this.stateFor(key);
+    if (state.bannedUntil > now) {
+      return {
+        allowed: false,
+        retryAfterSeconds: Math.max(1, Math.ceil((state.bannedUntil - now) / 1000)),
+        attemptsRemaining: 0,
+        banned: true,
+      };
+    }
+    if (state.bannedUntil !== 0 && state.bannedUntil <= now) {
+      state.bannedUntil = 0;
+      state.failures = [];
+    }
+    this.prune(state);
+    if (state.failures.length >= this.maxAttempts) {
+      // Defensive: if a window filled up between checks, apply the ban now.
+      state.bannedUntil = this.banSeconds > 0 ? now + this.banSeconds * 1000 : 0;
+      if (state.bannedUntil > now) {
+        return {
+          allowed: false,
+          retryAfterSeconds: this.banSeconds,
+          attemptsRemaining: 0,
+          banned: true,
+        };
+      }
+      return { allowed: false, retryAfterSeconds: 1, attemptsRemaining: 0, banned: false };
+    }
+    return {
+      allowed: true,
+      retryAfterSeconds: 0,
+      attemptsRemaining: Math.max(0, this.maxAttempts - state.failures.length),
+      banned: false,
+    };
+  }
+
+  recordFailure(key: string): LoginAttemptDecision {
+    const now = this.now();
+    const state = this.stateFor(key);
+    this.prune(state);
+    state.failures.push(now);
+    state.lastFailureAt = now;
+    if (state.failures.length >= this.maxAttempts && this.banSeconds > 0) {
+      state.bannedUntil = now + this.banSeconds * 1000;
+      state.failures = [];
+      return {
+        allowed: false,
+        retryAfterSeconds: this.banSeconds,
+        attemptsRemaining: 0,
+        banned: true,
+      };
+    }
+    return {
+      allowed: true,
+      retryAfterSeconds: 0,
+      attemptsRemaining: Math.max(0, this.maxAttempts - state.failures.length),
+      banned: false,
+    };
+  }
+
+  clear(key: string): void {
+    this.attempts.delete(key);
+  }
+
+  listBans(): BanEntry[] {
+    const now = this.now();
+    const bans: BanEntry[] = [];
+    for (const [ip, state] of this.attempts.entries()) {
+      if (state.bannedUntil > now) {
+        bans.push({
+          ip,
+          bannedUntil: state.bannedUntil,
+          failures: state.failures.length,
+          lastFailureAt: state.lastFailureAt,
+        });
+      }
+    }
+    return bans.sort((a, b) => b.bannedUntil - a.bannedUntil);
+  }
+
+  unban(key: string): boolean {
+    const state = this.attempts.get(key);
+    if (!state) return false;
+    this.attempts.delete(key);
+    return true;
+  }
 }
