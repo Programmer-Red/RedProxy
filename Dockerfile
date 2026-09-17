@@ -1,9 +1,14 @@
 # RedProxy server image.
 #
+# Two independent sites are served by one process:
+#   - user portal  : PORT       (default 3000), bind HOST       (default 0.0.0.0)
+#   - admin portal : ADMIN_PORT (default 3001), bind ADMIN_HOST (default 127.0.0.1)
+#
 # Build:
 #   docker build -t redproxy .
 # Run:
-#   docker run -d --name redproxy -p 3000:3000 \
+#   docker run -d --name redproxy \
+#     -p 3000:3000 -p 127.0.0.1:3001:3001 \
 #     -e PUBLIC_BASE_URL=http://localhost:3000 \
 #     -e ALLOW_INSECURE_HTTP=true \
 #     -v redproxy-data:/app/data \
@@ -31,6 +36,8 @@ FROM node:22-bookworm-slim AS runtime
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=3000 \
+    ADMIN_HOST=0.0.0.0 \
+    ADMIN_PORT=3001 \
     DATA_DIR=/app/data \
     PUBLIC_BASE_URL=http://localhost:3000
 
@@ -43,7 +50,7 @@ COPY --from=build --chown=node:node /app/package.json ./package.json
 RUN mkdir -p /app/data && chown -R node:node /app
 
 USER node
-EXPOSE 3000
+EXPOSE 3000 3001
 VOLUME ["/app/data"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

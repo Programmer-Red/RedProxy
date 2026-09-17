@@ -2,6 +2,7 @@ export type ProxyScheme = 'http' | 'https' | 'socks4' | 'socks5';
 export type NodeKind = 'proxy' | 'xray';
 export type XrayProtocol = 'vless' | 'vmess' | 'trojan' | 'shadowsocks';
 export type AuthMode = 'totp' | 'totp_password';
+export type AuthRealm = 'user' | 'admin';
 
 export interface XraySettings {
   protocol: XrayProtocol;
@@ -112,6 +113,7 @@ export interface PublicSession {
 
 export interface AuthSessionRecord {
   tokenHash: string;
+  realm: AuthRealm;
   createdAt: number;
   expiresAt: number;
   lastSeenAt: number;
@@ -156,6 +158,9 @@ export interface AppConfig {
   nodeEnv: string;
   host: string;
   port: number;
+  adminEnabled: boolean;
+  adminHost: string;
+  adminPort: number;
   publicBaseUrl: string;
   dataDir: string;
   crxPrivateKeyPath: string;

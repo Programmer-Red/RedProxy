@@ -86,6 +86,8 @@ function applyServeEnv(flags: Record<string, string | boolean>): void {
     ['static-dir', 'STATIC_DIR'],
     ['template-dir', 'EXTENSION_TEMPLATE_DIR'],
     ['enrollment-ttl', 'ENROLLMENT_TTL_SECONDS'],
+    ['admin-host', 'ADMIN_HOST'],
+    ['admin-port', 'ADMIN_PORT'],
   ];
   for (const [flag, env] of mapping) {
     const value = flagString(flags, flag);
@@ -95,12 +97,14 @@ function applyServeEnv(flags: Record<string, string | boolean>): void {
     ['cookie-secure', 'COOKIE_SECURE'],
     ['allow-insecure-http', 'ALLOW_INSECURE_HTTP'],
     ['trust-proxy', 'TRUST_PROXY'],
+    ['admin-enabled', 'ADMIN_ENABLED'],
   ];
   for (const [flag, env] of booleanMapping) {
     const value = flagBool(flags, flag);
     if (value !== undefined) process.env[env] = value ? 'true' : 'false';
   }
   if (flagBool(flags, 'no-cookie-secure')) process.env.COOKIE_SECURE = 'false';
+  if (flagBool(flags, 'no-admin')) process.env.ADMIN_ENABLED = 'false';
 }
 
 export function helpText(): string {
@@ -116,8 +120,11 @@ Usage:
   redproxy help                     Print this help
 
 Serve options:
-  --host <addr>                 Bind address (default 0.0.0.0)
-  --port <port>                 HTTP port (default 3000)
+  --host <addr>                 Bind address for the user portal (default 0.0.0.0)
+  --port <port>                 User portal HTTP port (default 3000)
+  --admin-host <addr>           Bind address for the admin portal (default 127.0.0.1)
+  --admin-port <port>           Admin portal HTTP port (default user port + 1)
+  --no-admin                    Disable the admin portal entirely
   --data-dir <dir>              Data directory (default ./data)
   --public-url <url>            URL written into generated extensions
   --session-ttl <seconds>       Max session TTL (default 3600)
@@ -132,6 +139,9 @@ Serve options:
   --static-dir <dir>            Override web UI directory
   --template-dir <dir>          Override extension template directory
 
+The user portal and the admin portal are two separate sites with separate
+cookies and separate login sessions.
+
 Environment variables are also supported; see .env.example and README.
 `;
 }
@@ -139,16 +149,36 @@ Environment variables are also supported; see .env.example and README.
 async function serve(flags: Record<string, string | boolean>): Promise<void> {
   applyServeEnv(flags);
   const config: AppConfig = loadConfig();
-  const { app } = createApp({ config });
-  const server = app.listen(config.port, config.host, () => {
-    console.log(`[RedProxy] listening on http://${config.host}:${config.port}`);
+  const { userApp, adminApp } = createApp({ config });
+
+  const userServer = userApp.listen(config.port, config.host, () => {
+    console.log(`[RedProxy] user portal:  http://${config.host}:${config.port}/`);
     console.log(`[RedProxy] public base URL: ${config.publicBaseUrl}`);
-    console.log(`[RedProxy] admin auth mode: ${config.authMode}`);
     console.log(`[RedProxy] data dir: ${config.dataDir}`);
   });
+
+  let adminServer: import('node:http').Server | null = null;
+  if (adminApp) {
+    adminServer = adminApp.listen(config.adminPort, config.adminHost, () => {
+      console.log(`[RedProxy] admin portal: http://${config.adminHost}:${config.adminPort}/`);
+      console.log(`[RedProxy] admin login mode: ${config.authMode}`);
+      if (config.adminHost === '0.0.0.0') {
+        console.log('[RedProxy] NOTE: the admin portal is bound to all interfaces; protect it with a firewall or set ADMIN_HOST=127.0.0.1.');
+      }
+    });
+  } else {
+    console.log('[RedProxy] admin portal disabled (ADMIN_ENABLED=false)');
+  }
+
   const shutdown = (signal: string): void => {
     console.log(`[RedProxy] received ${signal}, shutting down`);
-    server.close(() => process.exit(0));
+    let pending = adminServer ? 2 : 1;
+    const done = (): void => {
+      pending -= 1;
+      if (pending <= 0) process.exit(0);
+    };
+    userServer.close(done);
+    adminServer?.close(done);
     setTimeout(() => process.exit(1), 5000).unref();
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));

@@ -3,15 +3,15 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>RedProxy 控制台</title>
+    <title>RedProxy 管理后台</title>
     <link rel="stylesheet" href="/styles.css" />
     <script src="/app.js" defer></script>
   </head>
   <body>
     <header class="topbar">
       <div class="brand">
-        <h1>RedProxy</h1>
-        <p>TOTP 验证 → 一次性 CRX3 → 临时接管 Chrome 代理 → 自动恢复并卸载</p>
+        <h1>RedProxy <span class="tag">管理后台</span></h1>
+        <p>节点 / Xray / 会话 / 安全 / 导入导出 / 日志</p>
       </div>
       <div id="top-actions" class="top-actions hidden">
         <span id="auth-status" class="pill">已登录</span>
@@ -19,7 +19,6 @@
       </div>
     </header>
 
-    <!-- ------------------------------------------------------------- login -->
     <section id="login-view" class="card narrow">
       <h2>管理员登录</h2>
       <p class="muted">输入认证器中的 6 位 TOTP 动态码<span id="password-hint"></span>。</p>
@@ -33,17 +32,11 @@
         <button type="submit">登录</button>
       </form>
       <p id="login-error" class="error" role="alert"></p>
-      <p class="muted small">
-        首次部署：在服务器的 <code>&lt;data-dir&gt;/settings.json</code> 中保存了随机生成的 TOTP 密钥；
-        登录后在「安全」页可查看二维码、重新生成密钥或设置密码。
-      </p>
     </section>
 
-    <!-- ------------------------------------------------------------- app -->
     <div id="main-view" class="hidden">
       <nav class="tabs" id="tabs">
-        <button data-tab="use" class="tab active">使用</button>
-        <button data-tab="nodes" class="tab">节点</button>
+        <button data-tab="nodes" class="tab active">节点</button>
         <button data-tab="xray" class="tab">Xray</button>
         <button data-tab="sessions" class="tab">会话</button>
         <button data-tab="security" class="tab">安全</button>
@@ -51,44 +44,7 @@
         <button data-tab="logs" class="tab">日志</button>
       </nav>
 
-      <!-- use -->
-      <section class="card tab-panel" data-panel="use">
-        <div class="section-head">
-          <h2>使用区</h2>
-          <span id="session-status" class="pill">无会话</span>
-        </div>
-        <div class="grid two">
-          <div>
-            <label for="node-select">代理节点</label>
-            <select id="node-select"></select>
-            <label for="ttl-select">本次会话有效期</label>
-            <select id="ttl-select"></select>
-            <div class="button-row">
-              <button id="generate-crx" type="button">生成临时 CRX</button>
-              <button id="download-zip" class="secondary" type="button">下载 ZIP fallback</button>
-              <button id="close-session" class="danger" type="button">关闭当前会话</button>
-            </div>
-            <p id="session-message" class="muted" role="status"></p>
-            <p class="warn small">
-              CRX 中的 token 是<b>一次性</b>的：第一次心跳后立即被服务端轮换，旧 token 永久失效。即使扩展卸载失败，
-              会话结束后所有 token 也会失效，下载的安装包无法再次使用。
-            </p>
-          </div>
-          <div>
-            <h3>安装步骤</h3>
-            <ol class="steps">
-              <li>在「节点」页添加 HTTP/HTTPS/SOCKS4/SOCKS5 节点，或导入 Xray 分享链接。</li>
-              <li>选择节点和有效期，生成临时 CRX。</li>
-              <li>Chrome 打开 <code>chrome://extensions</code>，开启开发者模式，手动安装 CRX。</li>
-              <li>被 Windows/macOS 限制时，下载 ZIP，解压后“加载已解压的扩展程序”。</li>
-              <li>扩展每 15 秒心跳一次；页面关闭/主动关闭/超时后自动恢复代理并卸载。</li>
-            </ol>
-          </div>
-        </div>
-      </section>
-
-      <!-- nodes -->
-      <section class="card tab-panel hidden" data-panel="nodes">
+      <section class="card tab-panel" data-panel="nodes">
         <h2>节点管理</h2>
         <form id="node-form" class="grid">
           <div class="grid two">
@@ -220,7 +176,6 @@
         <pre id="xray-config-output" class="code hidden"></pre>
       </section>
 
-      <!-- xray -->
       <section class="card tab-panel hidden" data-panel="xray">
         <h2>Xray 分享链接导入</h2>
         <p class="muted">支持 vless://、vmess://、trojan://、ss://（SIP002 与旧版 base64）以及 http(s)/socks4/socks5:// 代理链接，每行一条。</p>
@@ -238,7 +193,6 @@
         </div>
       </section>
 
-      <!-- sessions -->
       <section class="card tab-panel hidden" data-panel="sessions">
         <div class="section-head">
           <h2>活跃会话</h2>
@@ -253,22 +207,20 @@
         <p id="admin-error" class="error" role="alert"></p>
       </section>
 
-      <!-- security -->
       <section class="card tab-panel hidden" data-panel="security">
         <h2>安全设置</h2>
         <div class="grid two">
           <div class="panel">
             <h3>认证方式</h3>
-            <label for="auth-mode">登录方式</label>
+            <label for="auth-mode">管理员登录方式</label>
             <select id="auth-mode">
               <option value="totp">仅 TOTP</option>
               <option value="totp_password">TOTP + 管理员密码</option>
             </select>
-            <div class="button-row">
-              <button id="save-auth-mode" type="button">保存认证方式</button>
-            </div>
+            <p class="muted small">用户门户始终只要求 TOTP，不受这里影响；这里只控制管理后台的登录方式。</p>
+            <div class="button-row"><button id="save-auth-mode" type="button">保存认证方式</button></div>
             <h3>管理员密码</h3>
-            <input id="new-password" type="password" placeholder="至少 12 位，仅在你选择 TOTP+密码时使用" maxlength="512" autocomplete="new-password" />
+            <input id="new-password" type="password" placeholder="至少 12 位" maxlength="512" autocomplete="new-password" />
             <div class="button-row">
               <button id="save-password" type="button">设置/修改密码</button>
               <button id="clear-password" class="danger" type="button">清除密码</button>
@@ -277,14 +229,12 @@
           </div>
           <div class="panel qr-panel">
             <h3>TOTP 绑定二维码</h3>
-            <p class="muted small">扫码导入认证器。不要把这个二维码或密钥泄露给他人。</p>
+            <p class="muted small">用户门户和管理后台共用同一个 TOTP 密钥。</p>
             <img id="totp-qr" alt="TOTP QR code" />
             <p id="totp-uri" class="mono small"></p>
             <label for="current-totp">输入当前 6 位动态码以重新生成密钥</label>
             <input id="current-totp" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="000000" />
-            <div class="button-row">
-              <button id="regenerate-totp" class="danger" type="button">随机生成新密钥</button>
-            </div>
+            <div class="button-row"><button id="regenerate-totp" class="danger" type="button">随机生成新密钥</button></div>
           </div>
         </div>
 
@@ -298,7 +248,6 @@
         </div>
       </section>
 
-      <!-- transfer -->
       <section class="card tab-panel hidden" data-panel="transfer">
         <h2>导入 / 导出</h2>
         <div class="grid two">
@@ -306,9 +255,7 @@
             <h3>导入</h3>
             <p class="muted small">粘贴 RedProxy JSON（数组或 <code>{nodes:[...]}</code>），或每行一条 Xray/代理分享链接。</p>
             <textarea id="import-text" rows="10" placeholder='[{"name":"Tokyo","kind":"proxy","scheme":"http","host":"127.0.0.1","port":10809}]'></textarea>
-            <div class="button-row">
-              <button id="import-button" type="button">导入</button>
-            </div>
+            <div class="button-row"><button id="import-button" type="button">导入</button></div>
             <pre id="import-result" class="code hidden"></pre>
           </div>
           <div class="panel">
@@ -324,7 +271,6 @@
         </div>
       </section>
 
-      <!-- logs -->
       <section class="card tab-panel hidden" data-panel="logs">
         <div class="section-head">
           <h2>审计日志</h2>

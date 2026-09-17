@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import type { AppConfig, AuthSessionRecord } from './types';
+import type { AppConfig, AuthRealm, AuthSessionRecord } from './types';
 
 export class AuthService {
   private sessions = new Map<string, AuthSessionRecord>();
@@ -13,12 +13,13 @@ export class AuthService {
     return crypto.createHash('sha256').update(token).digest('hex');
   }
 
-  createSession(): { token: string; record: AuthSessionRecord } {
+  createSession(realm: AuthRealm): { token: string; record: AuthSessionRecord } {
     const token = crypto.randomBytes(32).toString('base64url');
     const tokenHash = this.hashToken(token);
     const now = this.now();
     const record: AuthSessionRecord = {
       tokenHash,
+      realm,
       createdAt: now,
       expiresAt: now + this.config.authSessionTtlSeconds * 1000,
       lastSeenAt: now,
@@ -27,11 +28,12 @@ export class AuthService {
     return { token, record };
   }
 
-  validateToken(token: string | undefined | null): AuthSessionRecord | null {
+  validateToken(token: string | undefined | null, realm?: AuthRealm): AuthSessionRecord | null {
     if (!token) return null;
     const tokenHash = this.hashToken(token);
     const record = this.sessions.get(tokenHash);
     if (!record) return null;
+    if (realm && record.realm !== realm) return null;
     const now = this.now();
     if (record.expiresAt <= now) {
       this.sessions.delete(tokenHash);
@@ -41,9 +43,17 @@ export class AuthService {
     return record;
   }
 
-  revokeToken(token: string | undefined | null): void {
+  revokeToken(token: string | undefined | null, realm?: AuthRealm): void {
     if (!token) return;
-    this.sessions.delete(this.hashToken(token));
+    const record = this.validateToken(token, realm);
+    if (!record) return;
+    this.sessions.delete(record.tokenHash);
+  }
+
+  revokeRealm(realm: AuthRealm): void {
+    for (const [hash, record] of this.sessions.entries()) {
+      if (record.realm === realm) this.sessions.delete(hash);
+    }
   }
 
   revokeAll(): void {

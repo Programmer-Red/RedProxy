@@ -1,28 +1,25 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-interface AssetFile {
-  key: string;
-  file: string;
-}
-
 const ROOT = path.resolve(__dirname, '..');
 const OUTPUT = path.join(ROOT, 'server', 'src', 'generated', 'assets.ts');
 
-function collect(dir: string, prefix: string): AssetFile[] {
-  const absolute = path.join(ROOT, dir);
-  if (!fs.existsSync(absolute)) return [];
-  return fs
-    .readdirSync(absolute, { withFileTypes: true })
-    .filter(entry => entry.isFile())
-    .map(entry => ({ key: `${prefix}/${entry.name}`, file: path.join(absolute, entry.name) }))
-    .sort((a, b) => a.key.localeCompare(b.key));
+function walk(dir: string, prefix: string, out: Array<{ key: string; file: string }>): void {
+  if (!fs.existsSync(dir)) return;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const absolute = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      walk(absolute, `${prefix}/${entry.name}`, out);
+    } else if (entry.isFile()) {
+      out.push({ key: `${prefix}/${entry.name}`, file: absolute });
+    }
+  }
 }
 
-const files: AssetFile[] = [
-  ...collect('public', 'public'),
-  ...collect('extension-template', 'extension-template'),
-];
+const files: Array<{ key: string; file: string }> = [];
+walk(path.join(ROOT, 'public'), 'public', files);
+walk(path.join(ROOT, 'extension-template'), 'extension-template', files);
+files.sort((a, b) => a.key.localeCompare(b.key));
 
 const assets: Record<string, string> = {};
 for (const asset of files) {

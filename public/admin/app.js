@@ -8,19 +8,14 @@ const state = {
   logs: [],
   bans: [],
   authSettings: null,
-  authMode: 'totp',
-  currentSession: null,
-  activeTab: 'use',
-  deviceId: localStorage.getItem('redproxy_device_id') || '',
+  activeTab: 'nodes',
 };
 
 let pollTimer = null;
-let refreshInFlight = false;
 
 function $(id) { return document.getElementById(id); }
 function setText(id, value) { const node = $(id); if (node) node.textContent = value; }
 function setHidden(id, hidden) { const node = $(id); if (node) node.classList.toggle('hidden', hidden); }
-function show(id, visible) { setHidden(id, !visible); }
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -61,7 +56,7 @@ async function api(path, options = {}) {
   let data = null;
   if (text) { try { data = JSON.parse(text); } catch (_e) { data = { raw: text }; } }
   if (!response.ok) {
-    if (response.status === 401 && state.authenticated) { setAuthenticated(false); }
+    if (response.status === 401 && state.authenticated) setAuthenticated(false);
     const error = new Error((data && (data.message || data.error)) || `HTTP ${response.status}`);
     error.status = response.status; error.data = data;
     throw error;
@@ -76,6 +71,15 @@ function setAuthenticated(value) {
   setHidden('top-actions', !value);
 }
 
+async function loadAuthMode() {
+  try {
+    const data = await api('/api/auth/mode');
+    const field = $('password-field');
+    if (field) field.classList.toggle('hidden', data.authMode !== 'totp_password');
+    setText('password-hint', data.authMode === 'totp_password' ? '和管理员密码' : '');
+  } catch (err) { console.error('auth mode', err); }
+}
+
 async function login(event) {
   event.preventDefault();
   setText('login-error', '');
@@ -84,13 +88,15 @@ async function login(event) {
   try {
     await api('/api/auth/totp', { method: 'POST', body: { token, password } });
     setAuthenticated(true);
-    if ($('totp-token')) $('totp-token').value = '';
+    $('totp-token').value = '';
     if ($('admin-password')) $('admin-password').value = '';
     await refreshAll();
     startPolling();
   } catch (err) {
     const details = err.data && err.data.details;
-    const suffix = details && typeof details.attemptsRemaining === 'number' ? `（剩余尝试：${details.attemptsRemaining}）` : '';
+    let suffix = '';
+    if (details && typeof details.attemptsRemaining === 'number') suffix = `（剩余尝试：${details.attemptsRemaining}）`;
+    if (details && details.banned) suffix = `（该 IP 已被临时封禁，请 ${details.retryAfterSeconds}s 后再试）`;
     setText('login-error', `${err.message}${suffix}`);
   }
 }
@@ -102,54 +108,31 @@ async function logout() {
   pollTimer = null;
 }
 
-async function loadAuthMode() {
-  try {
-    const data = await api('/api/auth/mode');
-    state.authMode = data.authMode;
-    const pwdField = $('password-field');
-    if (pwdField) pwdField.classList.toggle('hidden', data.authMode !== 'totp_password');
-    setText('password-hint', data.authMode === 'totp_password' ? '和管理员密码' : '');
-  } catch (err) { console.error('auth mode', err); }
-}
-
 async function checkAuth() {
   await loadAuthMode();
-  try { await api('/api/me'); setAuthenticated(true); await refreshAll(); startPolling(); }
-  catch (err) { if (err.status !== 401) console.error(err); setAuthenticated(false); }
+  try {
+    await api('/api/me');
+    setAuthenticated(true);
+    await refreshAll();
+    startPolling();
+  } catch (err) {
+    if (err.status !== 401) console.error(err);
+    setAuthenticated(false);
+  }
 }
 
 async function refreshAll() {
-  await Promise.all([loadConfig(), loadNodes(), loadSessions(), loadCurrentSession(), loadSecurity(), loadLogs()]);
-}
-
-async function loadConfig() {
-  state.config = await api('/api/config');
-  renderTtlOptions();
-}
-
-function renderTtlOptions() {
-  const select = $('ttl-select');
-  if (!select || !state.config) return;
-  select.innerHTML = '';
-  (state.config.ttlOptions || [3600]).forEach(seconds => {
-    const option = document.createElement('option');
-    option.value = String(seconds);
-    option.textContent = seconds % 3600 === 0 ? `${seconds / 3600} 小时` : `${Math.round(seconds / 60)} 分钟`;
-    select.appendChild(option);
-  });
-  select.value = String(state.config.sessionTtlSeconds || 3600);
+  await Promise.all([loadNodes(), loadSessions(), loadSecurity(), loadLogs()]);
 }
 
 async function loadNodes() {
-  const data = await api('/api/admin/nodes');
+  const data = await api('/api/nodes');
   state.nodes = data.nodes || [];
   renderNodes();
+  renderXray();
 }
 
-function nodeProxyAddress(node) {
-  if (node.kind === 'xray') return `${node.host}:${node.port}`;
-  return `${node.host}:${node.port}`;
-}
+function nodeProxyAddress(node) { return `${node.host}:${node.port}`; }
 
 function nodeLocalAddress(node) {
   if (node.kind !== 'xray') return `${node.scheme}://${node.host}:${node.port}`;
@@ -158,25 +141,12 @@ function nodeLocalAddress(node) {
 
 function renderNodes() {
   const body = $('nodes-body');
-  const select = $('node-select');
-  if (!body || !select) return;
+  if (!body) return;
   body.innerHTML = '';
-  select.innerHTML = '';
-
-  const enabled = state.nodes.filter(node => node.enabled);
-  enabled.forEach(node => {
-    const option = document.createElement('option');
-    option.value = node.id;
-    option.textContent = `${node.name} · ${nodeLocalAddress(node)}`;
-    select.appendChild(option);
-  });
-  if (enabled.length === 0) {
-    const option = document.createElement('option');
-    option.value = '';
-    option.textContent = '没有可用节点';
-    select.appendChild(option);
+  if (state.nodes.length === 0) {
+    body.innerHTML = '<tr><td colspan="6" class="muted">暂无节点</td></tr>';
+    return;
   }
-
   state.nodes.forEach(node => {
     const tr = document.createElement('tr');
     const type = node.kind === 'xray' ? `Xray/${node.xray ? node.xray.protocol : '?'}` : node.scheme;
@@ -194,6 +164,12 @@ function renderNodes() {
       <td>${actions}</td>`;
     body.appendChild(tr);
   });
+}
+
+function syncNodeKindFields() {
+  const kind = $('node-kind').value;
+  $('proxy-fields').classList.toggle('hidden', kind !== 'proxy');
+  $('xray-fields').classList.toggle('hidden', kind !== 'xray');
 }
 
 function buildNodePayload() {
@@ -248,17 +224,11 @@ async function addNode(event) {
   event.preventDefault();
   setText('node-error', '');
   try {
-    await api('/api/admin/nodes', { method: 'POST', body: buildNodePayload() });
+    await api('/api/nodes', { method: 'POST', body: buildNodePayload() });
     $('node-form').reset();
-    $('node-kind').dispatchEvent(new Event('change'));
+    syncNodeKindFields();
     await loadNodes();
   } catch (err) { setText('node-error', err.message); }
-}
-
-function syncNodeKindFields() {
-  const kind = $('node-kind').value;
-  $('proxy-fields').classList.toggle('hidden', kind !== 'proxy');
-  $('xray-fields').classList.toggle('hidden', kind !== 'xray');
 }
 
 async function handleNodeAction(event) {
@@ -270,15 +240,15 @@ async function handleNodeAction(event) {
   try {
     if (action === 'delete') {
       if (!window.confirm('确定删除该节点？')) return;
-      await api(`/api/admin/nodes/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      await api(`/api/nodes/${encodeURIComponent(id)}`, { method: 'DELETE' });
       await loadNodes();
     } else if (action === 'toggle') {
       const node = state.nodes.find(item => item.id === id);
       if (!node) return;
-      await api(`/api/admin/nodes/${encodeURIComponent(id)}`, { method: 'PATCH', body: { enabled: !node.enabled } });
+      await api(`/api/nodes/${encodeURIComponent(id)}`, { method: 'PATCH', body: { enabled: !node.enabled } });
       await loadNodes();
     } else if (action === 'xray') {
-      const config = await api(`/api/admin/xray/config/${encodeURIComponent(id)}`);
+      const config = await api(`/api/xray/config/${encodeURIComponent(id)}`);
       const output = $('xray-config-output');
       output.textContent = JSON.stringify(config, null, 2);
       output.classList.remove('hidden');
@@ -288,7 +258,7 @@ async function handleNodeAction(event) {
 }
 
 async function loadSessions() {
-  const data = await api('/api/admin/sessions');
+  const data = await api('/api/sessions');
   state.sessions = data.sessions || [];
   setText('max-devices', `最大并发设备：${data.maxConcurrentDevices ?? '-'}`);
   renderSessions();
@@ -334,85 +304,21 @@ async function handleSessionAction(event) {
   const id = button.getAttribute('data-id');
   if (!id) return;
   try {
-    await api(`/api/admin/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
-    await Promise.all([loadSessions(), loadCurrentSession()]);
-  } catch (err) { setText('admin-error', err.message); }
-}
-
-function ensureDeviceId() {
-  if (!state.deviceId) {
-    state.deviceId = (crypto.randomUUID && crypto.randomUUID()) || `dev-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    localStorage.setItem('redproxy_device_id', state.deviceId);
-  }
-  return state.deviceId;
-}
-
-async function loadCurrentSession() {
-  try {
-    const data = await api('/api/session');
-    state.currentSession = data.session || null;
-    renderCurrentSession();
-  } catch (err) { if (err.status !== 401) console.error(err); }
-}
-
-function renderCurrentSession() {
-  const session = state.currentSession;
-  const closeButton = $('close-session');
-  if (!session || (session.state !== 'active' && session.state !== 'pending')) {
-    setText('session-status', '无会话');
-    setText('session-message', session ? `上次会话状态：${sessionStateLabel(session)}` : '选择节点和有效期后生成临时 CRX。');
-    if (closeButton) closeButton.disabled = true;
-    return;
-  }
-  setText('session-status', session.state === 'pending' ? '待安装' : '会话活跃');
-  setText('session-message',
-    `设备 ${session.deviceId} 使用节点 ${session.nodeName}；剩余 ${fmtRemaining(session.remainingSeconds)}。${session.enrolled ? '扩展已绑定。' : '等待扩展首次心跳（CRX token 一次性）。'}`);
-  if (closeButton) closeButton.disabled = false;
-}
-
-async function createSessionIfNeeded() {
-  if (state.currentSession && (state.currentSession.state === 'active' || state.currentSession.state === 'pending')) {
-    return state.currentSession;
-  }
-  const nodeId = $('node-select').value;
-  if (!nodeId) throw new Error('请先添加并启用一个代理节点');
-  const ttlSeconds = Number($('ttl-select').value || 3600);
-  const data = await api('/api/session', { method: 'POST', body: { deviceId: ensureDeviceId(), nodeId, ttlSeconds } });
-  state.currentSession = data.session;
-  renderCurrentSession();
-  await loadSessions();
-  return state.currentSession;
-}
-
-async function generateCrx() {
-  try { await createSessionIfNeeded(); window.location.href = '/api/session/extension.crx'; }
-  catch (err) { setText('session-message', err.message); }
-}
-
-async function downloadZip() {
-  try { await createSessionIfNeeded(); window.location.href = '/api/session/extension.zip'; }
-  catch (err) { setText('session-message', err.message); }
-}
-
-async function revokeSession() {
-  try {
-    await api('/api/session/revoke', { method: 'POST', body: {} });
-    state.currentSession = null;
-    renderCurrentSession();
+    await api(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
     await loadSessions();
-  } catch (err) { setText('session-message', err.message); }
+  } catch (err) { setText('admin-error', err.message); }
 }
 
 async function loadSecurity() {
   try {
-    const data = await api('/api/admin/settings');
+    const data = await api('/api/settings');
     state.authSettings = data;
     $('auth-mode').value = data.authMode;
     $('totp-qr').src = data.qrDataUrl;
     setText('totp-uri', `${data.otpauthUri}\n密钥：${data.totpSecretBase32}`);
   } catch (err) { console.error('security', err); }
   try {
-    const bans = await api('/api/admin/login-bans');
+    const bans = await api('/api/login-bans');
     state.bans = bans.bans || [];
     setText('ban-config', `按 ${bans.config.key} 计数：${bans.config.windowSeconds}s 内失败 ${bans.config.maxAttempts} 次 → 封禁 ${bans.config.banSeconds}s（可在下方手动解封）`);
     renderBans();
@@ -444,7 +350,7 @@ async function handleBanAction(event) {
   const ip = button.getAttribute('data-ip');
   if (!ip) return;
   try {
-    await api(`/api/admin/login-bans/${encodeURIComponent(ip)}`, { method: 'DELETE' });
+    await api(`/api/login-bans/${encodeURIComponent(ip)}`, { method: 'DELETE' });
     await loadSecurity();
   } catch (err) { setText('security-message', err.message); }
 }
@@ -452,17 +358,17 @@ async function handleBanAction(event) {
 async function saveAuthMode() {
   setText('security-message', '');
   try {
-    await api('/api/admin/settings', { method: 'PATCH', body: { authMode: $('auth-mode').value } });
+    await api('/api/settings', { method: 'PATCH', body: { authMode: $('auth-mode').value } });
     setText('security-message', '认证方式已保存');
-    await loadSecurity();
+    await Promise.all([loadSecurity(), loadAuthMode()]);
   } catch (err) { setText('security-message', err.message); }
 }
 
 async function savePassword() {
   setText('security-message', '');
   try {
-    await api('/api/admin/settings/password', { method: 'POST', body: { password: $('new-password').value } });
-    if ($('new-password')) $('new-password').value = '';
+    await api('/api/settings/password', { method: 'POST', body: { password: $('new-password').value } });
+    $('new-password').value = '';
     setText('security-message', '密码已设置');
     await loadSecurity();
   } catch (err) { setText('security-message', err.message); }
@@ -471,18 +377,18 @@ async function savePassword() {
 async function clearPassword() {
   setText('security-message', '');
   try {
-    await api('/api/admin/settings/password', { method: 'DELETE' });
+    await api('/api/settings/password', { method: 'DELETE' });
     setText('security-message', '密码已清除，认证方式已回退为仅 TOTP');
-    await loadSecurity();
+    await Promise.all([loadSecurity(), loadAuthMode()]);
   } catch (err) { setText('security-message', err.message); }
 }
 
 async function regenerateTotp() {
   setText('security-message', '');
   try {
-    await api('/api/admin/settings/totp/regenerate', { method: 'POST', body: { currentTotp: $('current-totp').value.trim() } });
-    if ($('current-totp')) $('current-totp').value = '';
-    setText('security-message', '已生成新的随机密钥，请重新扫码绑定');
+    await api('/api/settings/totp/regenerate', { method: 'POST', body: { currentTotp: $('current-totp').value.trim() } });
+    $('current-totp').value = '';
+    setText('security-message', '已生成新的随机密钥，请重新扫码绑定；用户门户也会同步使用新密钥');
     await loadSecurity();
   } catch (err) { setText('security-message', err.message); }
 }
@@ -491,17 +397,16 @@ async function importLinks() {
   setText('xray-message', '');
   try {
     const text = $('xray-links').value;
-    const result = await api('/api/admin/nodes/import', { method: 'POST', body: { text } });
+    const result = await api('/api/nodes/import', { method: 'POST', body: { text } });
     setText('xray-message', `导入成功 ${result.importedCount} 个，失败 ${result.errorCount} 个`);
     $('xray-links').value = '';
     await loadNodes();
-    renderXray();
   } catch (err) { setText('xray-message', err.message); }
 }
 
 async function exportLinks() {
   try {
-    const data = await api('/api/admin/nodes/export/links');
+    const data = await api('/api/nodes/export/links');
     $('xray-links').value = (data.links || []).join('\n');
     setText('xray-message', `已导出 ${data.links.length} 条链接到文本框`);
   } catch (err) { setText('xray-message', err.message); }
@@ -536,7 +441,7 @@ async function handleXrayTableAction(event) {
   const id = button.getAttribute('data-id');
   if (!id) return;
   try {
-    const config = await api(`/api/admin/xray/config/${encodeURIComponent(id)}`);
+    const config = await api(`/api/xray/config/${encodeURIComponent(id)}`);
     downloadBlob(`${id}-xray.json`, JSON.stringify(config, null, 2), 'application/json');
   } catch (err) { setText('xray-message', err.message); }
 }
@@ -546,16 +451,15 @@ async function importEverything() {
   output.classList.remove('hidden');
   output.textContent = '导入中…';
   try {
-    const result = await api('/api/admin/nodes/import', { method: 'POST', body: { text: $('import-text').value } });
+    const result = await api('/api/nodes/import', { method: 'POST', body: { text: $('import-text').value } });
     output.textContent = JSON.stringify(result, null, 2);
     await loadNodes();
-    renderXray();
   } catch (err) { output.textContent = err.message; }
 }
 
 function exportJson() {
   const includeSecrets = $('export-secrets').checked;
-  fetch(`/api/admin/nodes/export?secrets=${includeSecrets ? 'true' : 'false'}`, { credentials: 'same-origin' })
+  fetch(`/api/nodes/export?secrets=${includeSecrets ? 'true' : 'false'}`, { credentials: 'same-origin' })
     .then(r => r.text())
     .then(text => {
       $('export-preview').classList.remove('hidden');
@@ -567,14 +471,14 @@ function exportJson() {
 
 async function exportShareLinksDownload() {
   try {
-    const data = await api('/api/admin/nodes/export/links');
+    const data = await api('/api/nodes/export/links');
     downloadBlob('redproxy-nodes.txt', (data.links || []).join('\n'), 'text/plain');
   } catch (err) { setText('xray-message', err.message); }
 }
 
 async function loadLogs() {
   try {
-    const data = await api('/api/admin/events');
+    const data = await api('/api/events');
     state.logs = data.events || [];
     renderLogs();
   } catch (err) { console.error('logs', err); }
@@ -609,45 +513,19 @@ function switchTab(tab) {
   if (tab === 'security') void loadSecurity();
   if (tab === 'logs') void loadLogs();
   if (tab === 'sessions') void loadSessions();
-  if (tab === 'xray') renderXray();
-}
-
-function tick() {
-  const session = state.currentSession;
-  if (!session || (session.state !== 'active' && session.state !== 'pending')) return;
-  const remaining = Math.max(0, Math.ceil((session.expiresAt - Date.now()) / 1000));
-  session.remainingSeconds = remaining;
-  setText('session-message',
-    `设备 ${session.deviceId} 使用节点 ${session.nodeName}；剩余 ${fmtRemaining(remaining)}。${session.enrolled ? '扩展已绑定。' : '等待扩展首次心跳（CRX token 一次性）。'}`);
-  const idle = Math.floor((Date.now() - session.lastHeartbeatAt) / 1000);
-  if (idle > 30) void refreshSession();
-  if (remaining <= 0) { state.currentSession = null; renderCurrentSession(); }
-}
-
-async function refreshSession() {
-  if (refreshInFlight) return;
-  refreshInFlight = true;
-  try { await loadCurrentSession(); } finally { refreshInFlight = false; }
+  if (tab === 'xray' || tab === 'nodes') renderXray();
 }
 
 function startPolling() {
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = setInterval(() => {
-    tick();
-    if (state.authenticated) { void loadSessions(); if (state.activeTab === 'logs') void loadLogs(); }
+    if (!state.authenticated) return;
+    void loadSessions();
+    if (state.activeTab === 'logs') void loadLogs();
   }, 5000);
 }
 
-function pagehideRevoke() {
-  const session = state.currentSession;
-  if (!session || (session.state !== 'active' && session.state !== 'pending')) return;
-  try {
-    const payload = new Blob([JSON.stringify({ reason: 'pagehide' })], { type: 'application/json' });
-    navigator.sendBeacon('/api/session/revoke', payload);
-  } catch (err) { console.error('sendBeacon failed', err); }
-}
-
-function initEvents() {
+document.addEventListener('DOMContentLoaded', () => {
   $('login-form').addEventListener('submit', login);
   $('logout-button').addEventListener('click', logout);
   $('tabs').addEventListener('click', event => {
@@ -659,9 +537,6 @@ function initEvents() {
   $('nodes-body').addEventListener('click', handleNodeAction);
   $('sessions-body').addEventListener('click', handleSessionAction);
   $('bans-body').addEventListener('click', handleBanAction);
-  $('generate-crx').addEventListener('click', generateCrx);
-  $('download-zip').addEventListener('click', downloadZip);
-  $('close-session').addEventListener('click', revokeSession);
   $('save-auth-mode').addEventListener('click', saveAuthMode);
   $('save-password').addEventListener('click', savePassword);
   $('clear-password').addEventListener('click', clearPassword);
@@ -673,12 +548,6 @@ function initEvents() {
   $('export-json').addEventListener('click', exportJson);
   $('export-links-button').addEventListener('click', exportShareLinksDownload);
   $('refresh-logs').addEventListener('click', loadLogs);
-  window.addEventListener('pagehide', pagehideRevoke);
-  window.addEventListener('beforeunload', pagehideRevoke);
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-  initEvents();
   syncNodeKindFields();
   void checkAuth();
 });

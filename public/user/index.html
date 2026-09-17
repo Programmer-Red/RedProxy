@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RedProxy 临时浏览器代理</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <h1>RedProxy</h1>
+        <p>TOTP 验证 → 一次性 CRX3 → 临时接管 Chrome 代理 → 自动恢复并卸载</p>
+      </div>
+      <div id="top-actions" class="top-actions hidden">
+        <span id="auth-status" class="pill">已登录</span>
+        <button id="logout-button" class="secondary" type="button">退出</button>
+      </div>
+    </header>
+
+    <section id="login-view" class="card narrow">
+      <h2>登录</h2>
+      <p class="muted">请输入认证器中的 6 位 TOTP 动态码。</p>
+      <form id="login-form">
+        <label for="totp-token">TOTP 动态码</label>
+        <input id="totp-token" name="token" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="000000" required />
+        <button type="submit">登录</button>
+      </form>
+      <p id="login-error" class="error" role="alert"></p>
+      <p class="muted small">
+        TOTP 绑定由管理员统一配置。如果你还没有绑定，请联系管理员获取二维码或绑定链接。
+      </p>
+    </section>
+
+    <div id="main-view" class="hidden">
+      <section class="card">
+        <div class="section-head">
+          <h2>临时代理会话</h2>
+          <span id="session-status" class="pill">无会话</span>
+        </div>
+        <div class="grid two">
+          <div>
+            <label for="node-select">代理节点</label>
+            <select id="node-select"></select>
+            <label for="ttl-select">本次会话有效期</label>
+            <select id="ttl-select"></select>
+            <div class="button-row">
+              <button id="generate-crx" type="button">生成临时 CRX</button>
+              <button id="download-zip" class="secondary" type="button">下载 ZIP fallback</button>
+              <button id="close-session" class="danger" type="button">关闭当前会话</button>
+            </div>
+            <p id="session-message" class="muted" role="status"></p>
+            <p class="warn small">
+              CRX 中的 token 是一次性的：第一次心跳后立即被服务端轮换，旧 token 永久失效。
+              会话结束后所有 token 都会失效，下载的安装包无法再次使用。
+            </p>
+          </div>
+          <div>
+            <h3>安装步骤</h3>
+            <ol class="steps">
+              <li>选择节点和有效期，生成临时 CRX。</li>
+              <li>Chrome 打开 <code>chrome://extensions</code>，开启开发者模式，手动安装 CRX。</li>
+              <li>被 Windows/macOS 限制时，下载 ZIP，解压后“加载已解压的扩展程序”。</li>
+              <li>扩展每 15 秒心跳一次；页面关闭 / 主动关闭 / 超时后自动恢复代理并卸载。</li>
+            </ol>
+            <p class="muted small">
+              注意：Chrome 代理设置仅作用于浏览器，不等于系统所有程序都走代理；
+              CRX 下载文件可能留在下载目录，扩展自卸载不会删除它。
+            </p>
+          </div>
+        </div>
+      </section>
+    </div>
+  </body>
+</html>

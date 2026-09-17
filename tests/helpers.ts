@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import * as OTPAuth from 'otpauth';
 import request from 'supertest';
+import type { Express } from 'express';
 import { createApp } from '../server/src/app';
 import { toTestConfig } from '../server/src/config';
 import type { AppConfig, NodeRecord, ProxyScheme } from '../server/src/types';
@@ -24,7 +25,12 @@ export function testApp(overrides: Partial<AppConfig> & { now?: () => number } =
     templateDir: path.resolve(__dirname, '../extension-template'),
     now: overrides.now,
   });
-  return { ...created, config };
+  return {
+    userApp: created.userApp as Express,
+    adminApp: created.adminApp as Express,
+    services: created.services,
+    config,
+  };
 }
 
 export function currentTotp(secret = TEST_TOTP_SECRET, timestamp = Date.now()): string {
@@ -39,14 +45,30 @@ export function currentTotp(secret = TEST_TOTP_SECRET, timestamp = Date.now()): 
   return totp.generate({ timestamp });
 }
 
-export async function loginAgent(app: Parameters<typeof request.agent>[0], timestamp = Date.now()) {
+/** Log in to the end-user portal (TOTP only). */
+export async function loginUserAgent(app: Express, timestamp = Date.now()) {
   const agent = request.agent(app);
   const response = await agent.post('/api/auth/totp').send({ token: currentTotp(TEST_TOTP_SECRET, timestamp) });
   if (response.status !== 200) {
-    throw new Error(`login failed in test: ${response.status} ${JSON.stringify(response.body)}`);
+    throw new Error(`user login failed in test: ${response.status} ${JSON.stringify(response.body)}`);
   }
   return agent;
 }
+
+/** Log in to the administrator portal. */
+export async function loginAdminAgent(app: Express, options: { timestamp?: number; password?: string } = {}) {
+  const agent = request.agent(app);
+  const response = await agent
+    .post('/api/auth/totp')
+    .send({ token: currentTotp(TEST_TOTP_SECRET, options.timestamp ?? Date.now()), password: options.password });
+  if (response.status !== 200) {
+    throw new Error(`admin login failed in test: ${response.status} ${JSON.stringify(response.body)}`);
+  }
+  return agent;
+}
+
+/** Backwards-compatible alias for older tests that log into the admin portal. */
+export const loginAgent = loginAdminAgent;
 
 export function sampleNode(overrides: Partial<NodeRecord> = {}): NodeRecord {
   return {
