@@ -103,6 +103,46 @@ describe('HTTP API integration', () => {
     expect(afterRevoke.status).toBe(401);
   });
 
+  it('reports 404 for a revoked session download so the client can recreate it', async () => {
+    const { userApp, adminApp, config } = testApp();
+    tempDirs.push(config.dataDir);
+    const admin = await loginAdminAgent(adminApp);
+    await admin.post('/api/nodes').send(SAMPLE_NODE);
+
+    const user = await loginUserAgent(userApp);
+    await user.post('/api/session').send({ deviceId: 'device-download-retry', nodeId: SAMPLE_NODE.id, ttlSeconds: 300 });
+
+    // Simulate the pagehide beacon revoking the session before the download.
+    await user.post('/api/session/revoke').send({});
+    const missing = await user.get('/api/session/extension.zip');
+    expect(missing.status).toBe(404);
+    expect(missing.body.error).toBe('session_not_found');
+
+    // The client recreates the session, then the download succeeds.
+    const recreated = await user.post('/api/session').send({ deviceId: 'device-download-retry', nodeId: SAMPLE_NODE.id, ttlSeconds: 300 });
+    expect(recreated.status).toBe(201);
+    const zip = await user.get('/api/session/extension.zip').buffer(true).parse(binaryParser);
+    expect(zip.status).toBe(200);
+    expect(Buffer.isBuffer(zip.body)).toBe(true);
+    expect(zip.body.length).toBeGreaterThan(500);
+  });
+
+  it('exposes the shipped default credentials only before they are changed', async () => {
+    const { adminApp, config } = testApp();
+    tempDirs.push(config.dataDir);
+
+    const before = await request(adminApp).get('/api/bootstrap');
+    expect(before.body.needsSetup).toBe(true);
+    expect(before.body.defaults).toEqual({ username: 'admin', password: 'redproxy' });
+
+    const admin = await loginAdminAgent(adminApp);
+    await admin.post('/api/settings/password').send({ password: 'a-much-better-password' });
+
+    const after = await request(adminApp).get('/api/bootstrap');
+    expect(after.body.needsSetup).toBe(false);
+    expect(after.body.defaults).toBeNull();
+  });
+
   it('validates node input and rejects unsupported protocols and ports', async () => {
     const { adminApp, config } = testApp();
     tempDirs.push(config.dataDir);

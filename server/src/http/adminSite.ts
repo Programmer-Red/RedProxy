@@ -7,6 +7,7 @@ import { createNodeSchema, importPayloadSchema } from '../nodes';
 import type { AppServices } from '../services';
 import type { NodeRecord, XraySettings } from '../types';
 import { asyncHandler, clientIp, cookieOptions, errorHandler, HttpError, serveSiteAsset, throwValidation } from './common';
+import { DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_USERNAME } from '../settings';
 
 export const ADMIN_COOKIE_NAME = 'redproxy_admin';
 
@@ -100,6 +101,18 @@ export function createAdminSite(options: AdminSiteOptions): express.Express {
       site: 'admin',
       uptimeSeconds: Math.floor(process.uptime()),
       timestamp: new Date(options.services.config.nodeEnv === 'test' ? Date.now() : Date.now()).toISOString(),
+    });
+  });
+
+  // Public bootstrap hint. It only reveals the shipped default credentials
+  // while the administrator has not changed them yet.
+  app.get('/api/bootstrap', (_req, res) => {
+    const settingsValue = settings.get();
+    res.json({
+      needsSetup: settingsValue.mustChangePassword,
+      defaults: settingsValue.mustChangePassword
+        ? { username: DEFAULT_ADMIN_USERNAME, password: DEFAULT_ADMIN_PASSWORD }
+        : null,
     });
   });
 

@@ -7,6 +7,7 @@ const state = {
   nodes: [],
   currentSession: null,
   deviceId: localStorage.getItem('redproxy_device_id') || '',
+  downloading: false,
 };
 
 let pollTimer = null;
@@ -184,8 +185,8 @@ function renderSession() {
   close.disabled = false;
 }
 
-async function createSessionIfNeeded() {
-  if (state.currentSession && (state.currentSession.state === 'active' || state.currentSession.state === 'pending')) {
+async function createSessionIfNeeded(force = false) {
+  if (!force && state.currentSession && (state.currentSession.state === 'active' || state.currentSession.state === 'pending')) {
     return state.currentSession;
   }
   const nodeId = $('node-select').value;
@@ -197,12 +198,48 @@ async function createSessionIfNeeded() {
   return state.currentSession;
 }
 
+async function fetchExtension(kind) {
+  const path = `/api/session/extension.${kind}`;
+  let response = await fetch(path, { credentials: 'same-origin' });
+  if (response.status === 404) {
+    // A previous page navigation (pagehide sendBeacon) may have revoked the
+    // session right before the download. Recreate it once and retry.
+    const text = await response.text();
+    if (text.includes('session_not_found')) {
+      await createSessionIfNeeded(true);
+      response = await fetch(path, { credentials: 'same-origin' });
+    } else {
+      let message = `HTTP ${response.status}`;
+      try { const data = JSON.parse(text); message = data.message || data.error || message; } catch (_e) { /* ignore */ }
+      throw new Error(message);
+    }
+  }
+  if (!response.ok) {
+    let message = `HTTP ${response.status}`;
+    try { const data = await response.json(); message = data.message || data.error || message; } catch (_e) { /* ignore */ }
+    throw new Error(message);
+  }
+  return response.blob();
+}
+
 async function generate(kind) {
+  state.downloading = true;
   try {
     await createSessionIfNeeded();
-    window.location.href = `/api/session/extension.${kind}`;
+    const blob = await fetchExtension(kind);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `redproxy-${kind}.${kind}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    setText('session-message', `已开始下载 ${kind.toUpperCase()}。`);
   } catch (err) {
     setText('session-message', err.message);
+  } finally {
+    state.downloading = false;
   }
 }
 
@@ -238,6 +275,9 @@ function startPolling() {
 }
 
 function pagehideRevoke() {
+  // Never revoke while a download is in flight: the download request itself
+  // must not be cancelled by the pagehide beacon.
+  if (state.downloading) return;
   const session = state.currentSession;
   if (!session || (session.state !== 'active' && session.state !== 'pending')) return;
   try {

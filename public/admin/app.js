@@ -96,11 +96,13 @@ async function loadAuthMode() {
 
 async function loadDefaultHint() {
   try {
-    const settings = await api('/api/settings').catch(() => null);
-    if (settings && settings.defaults) {
-      setText('default-hint', `首次部署默认账号：${settings.defaults.username} / ${settings.defaults.password}，登录后请立即修改。`);
+    const data = await api('/api/bootstrap');
+    if (data.defaults) {
+      setText('default-hint', `首次部署默认账号：${data.defaults.username} / ${data.defaults.password}，登录后请立即修改。`);
+    } else {
+      setText('default-hint', '');
     }
-  } catch (_err) { /* not logged in yet */ }
+  } catch (_err) { /* ignore */ }
 }
 
 async function login(event) {
