@@ -10,7 +10,7 @@ import { ConcurrentDeviceLimitError, InvalidExtensionTokenError, SessionService 
 import { SettingsService } from '../settings';
 import type { AppConfig, SessionRecord } from '../types';
 import { NodeService } from '../nodes';
-import { asyncHandler, clientIp, cookieOptions, errorHandler, HttpError, serveSiteAsset, throwValidation } from './common';
+import { asyncHandler, clientIp, cookieOptions, errorHandler, extensionCors, HttpError, serveSiteAsset, throwValidation } from './common';
 
 export const USER_COOKIE_NAME = 'redproxy_user';
 
@@ -46,6 +46,7 @@ export function createUserSite(options: UserSiteOptions): express.Express {
     if (req.path.startsWith('/api/')) res.setHeader('Cache-Control', 'no-store');
     next();
   });
+  app.use(extensionCors);
 
   const requireUserAuth = (req: Request, res: Response, next: NextFunction): void => {
     const token = typeof req.cookies[USER_COOKIE_NAME] === 'string' ? req.cookies[USER_COOKIE_NAME] : undefined;

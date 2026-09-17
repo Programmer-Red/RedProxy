@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import JSZip from 'jszip';
 import { afterEach, describe, expect, it } from 'vitest';
-import { buildExtensionArtifacts, buildRuntimeConfig, extensionNodeConfig } from '../server/src/extension';
+import { buildExtensionArtifacts, buildManifest, buildRuntimeConfig, extensionNodeConfig, serverHostPermission } from '../server/src/extension';
 import { toTestConfig } from '../server/src/config';
 import type { ExtensionRuntimeConfig } from '../server/src/types';
 import { sampleNode, tmpDir } from './helpers';
@@ -62,6 +62,16 @@ describe('dynamic CRX3 generation', () => {
     expect(background).toContain('10808');
     expect(background).toContain('enrollmentExpiresAt');
     expect(background).not.toContain('__REDPROXY_CONFIG__');
+  });
+
+  it('always grants the extension access to the RedProxy server origin', () => {
+    const config = toTestConfig({ dataDir: tmpDir() });
+    const runtime = buildRuntimeConfig(config, sessionStub(), sampleNode(), 'token', Date.now());
+    const manifest = buildManifest(runtime) as { host_permissions?: string[]; permissions: string[] };
+    expect(manifest.host_permissions).toContain('http://127.0.0.1:3000/*');
+    expect(manifest.permissions).toEqual(expect.arrayContaining(['proxy', 'storage', 'alarms', 'management']));
+    expect(serverHostPermission('https://proxy.example.com')).toBe('https://proxy.example.com/*');
+    expect(serverHostPermission('https://proxy.example.com:8443/base')).toBe('https://proxy.example.com:8443/*');
   });
 
   it('maps an Xray node to its local HTTP/SOCKS inbound for the extension', async () => {

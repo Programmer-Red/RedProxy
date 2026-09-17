@@ -103,6 +103,27 @@ describe('HTTP API integration', () => {
     expect(afterRevoke.status).toBe(401);
   });
 
+  it('answers CORS preflight from an extension origin', async () => {
+    const { userApp, config } = testApp();
+    tempDirs.push(config.dataDir);
+
+    const preflight = await request(userApp)
+      .options('/api/extension/heartbeat')
+      .set('Origin', 'chrome-extension://agamfhhobcaljeiclcchicmbgmnfohfn')
+      .set('Access-Control-Request-Method', 'POST')
+      .set('Access-Control-Request-Headers', 'authorization,content-type');
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers['access-control-allow-origin']).toBe('chrome-extension://agamfhhobcaljeiclcchicmbgmnfohfn');
+    expect(String(preflight.headers['access-control-allow-headers']).toLowerCase()).toContain('authorization');
+
+    // A normal browser origin must not be granted CORS access.
+    const browser = await request(userApp)
+      .options('/api/extension/heartbeat')
+      .set('Origin', 'https://evil.example.com')
+      .set('Access-Control-Request-Method', 'POST');
+    expect(browser.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
   it('reports 404 for a revoked session download so the client can recreate it', async () => {
     const { userApp, adminApp, config } = testApp();
     tempDirs.push(config.dataDir);

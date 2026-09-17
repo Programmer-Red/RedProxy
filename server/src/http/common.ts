@@ -112,3 +112,26 @@ export function errorHandler() {
     res.status(500).json({ error: 'internal_error', message });
   };
 }
+
+/**
+ * Extension service workers run with origin `chrome-extension://<id>` (or the
+ * `moz-extension://` equivalent). When the manifest host_permissions are not
+ * enough (for example an older generated CRX), the browser still sends a CORS
+ * preflight for our Bearer-token heartbeat. This middleware answers that
+ * preflight and echoes the origin so the call is not blocked.
+ */
+export function extensionCors(req: Request, res: Response, next: NextFunction): void {
+  const origin = req.header('origin');
+  if (origin && /^(chrome|moz|safari-web)-extension:\/\//i.test(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+    res.setHeader('Access-Control-Max-Age', '600');
+    if (req.method === 'OPTIONS') {
+      res.status(204).end();
+      return;
+    }
+  }
+  next();
+}

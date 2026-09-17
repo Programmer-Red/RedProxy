@@ -27,12 +27,35 @@ export function sanitizeFileToken(value: string): string {
   return value.replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 80) || 'session';
 }
 
+/**
+ * Build the host permission pattern for the RedProxy server itself, e.g.
+ * `https://proxy.example.com/*`. The extension service worker must be granted
+ * access to this origin, otherwise its heartbeat fetch is treated as a normal
+ * cross-origin request and Chrome blocks it with a CORS preflight error.
+ */
+export function serverHostPermission(serverUrl: string): string | null {
+  try {
+    const url = new URL(serverUrl);
+    const port = url.port ? `:${url.port}` : '';
+    return `${url.protocol}//${url.hostname}${port}/*`;
+  } catch {
+    return null;
+  }
+}
+
 export function buildManifest(runtimeConfig: ExtensionRuntimeConfig): Record<string, unknown> {
   const permissions = ['proxy', 'storage', 'alarms', 'management'];
   const hostPermissions: string[] = [];
+
+  // Always grant access to the RedProxy server so heartbeat/revoke calls are
+  // not blocked by CORS.
+  const serverPermission = serverHostPermission(runtimeConfig.serverUrl);
+  if (serverPermission) hostPermissions.push(serverPermission);
+
   if (runtimeConfig.node.username || runtimeConfig.node.password) {
     permissions.push('webRequest', 'webRequestAuthProvider');
-    hostPermissions.push('<all_urls>');
+    // Proxy authentication needs to observe requests from every site.
+    if (!hostPermissions.includes('<all_urls>')) hostPermissions.push('<all_urls>');
   }
 
   const manifest: Record<string, unknown> = {
