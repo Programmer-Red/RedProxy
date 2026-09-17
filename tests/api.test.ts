@@ -34,13 +34,13 @@ describe('site separation', () => {
 
     const userIndex = await request(userApp).get('/');
     expect(userIndex.status).toBe(200);
-    expect(userIndex.text).toContain('临时代理会话');
+    expect(userIndex.text).toContain('临时会话');
     expect(userIndex.text).not.toContain('节点管理');
 
     const adminIndex = await request(adminApp).get('/');
     expect(adminIndex.status).toBe(200);
     expect(adminIndex.text).toContain('管理后台');
-    expect(adminIndex.text).toContain('节点管理');
+    expect(adminIndex.text).toContain('导入导出');
   });
 
   it('keeps user and admin sessions independent', async () => {

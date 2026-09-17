@@ -107,15 +107,24 @@ export function createUserSite(options: UserSiteOptions): express.Express {
   });
 
   app.get('/api/auth/mode', (_req, res) => {
-    // The end-user portal always requires TOTP. The admin portal is where the
-    // optional password layer is configured.
-    res.json({ authMode: 'totp', passwordRequired: false });
+    const mode = settings.get().userAuthMode;
+    res.json({
+      authMode: mode,
+      passwordRequired: mode === 'password' || mode === 'totp_password',
+      totpRequired: mode === 'totp' || mode === 'totp_password',
+    });
   });
 
   app.post(
     '/api/auth/totp',
     asyncHandler(async (req, res) => {
-      const parsed = z.object({ token: z.string().regex(/^\d{6}$/, 'token must be exactly 6 digits') }).safeParse(req.body);
+      const parsed = z
+        .object({
+          token: z.string().regex(/^\d{6}$/, 'token must be exactly 6 digits').optional(),
+          password: z.string().max(512).optional(),
+          username: z.string().max(128).optional(),
+        })
+        .safeParse(req.body);
       if (!parsed.success) throwValidation(parsed.error);
 
       const ip = clientIp(req);
@@ -128,10 +137,12 @@ export function createUserSite(options: UserSiteOptions): express.Express {
         });
       }
 
-      if (!settings.verifyUserTotp(parsed.data.token)) {
+      const mode = settings.get().userAuthMode;
+      const result = settings.verifyLogin(mode, parsed.data);
+      if (!result.ok) {
         const after = rateLimiter.recordFailure(ip);
-        audit.record('user_login_failed', { ip, meta: { banned: after.banned } });
-        throw new HttpError(401, 'invalid_totp', 'Invalid TOTP code', {
+        audit.record('user_login_failed', { ip, meta: { mode, reason: result.reason, banned: after.banned } });
+        throw new HttpError(401, 'invalid_credentials', 'Invalid credentials', {
           attemptsRemaining: after.attemptsRemaining,
           banned: after.banned,
           retryAfterSeconds: after.retryAfterSeconds,
@@ -141,8 +152,8 @@ export function createUserSite(options: UserSiteOptions): express.Express {
       rateLimiter.clear(ip);
       const created = auth.createSession('user');
       res.cookie(USER_COOKIE_NAME, created.token, cookieOptions(config));
-      audit.record('user_login', { ip, meta: { expiresAt: created.record.expiresAt } });
-      res.json({ authenticated: true, expiresAt: created.record.expiresAt });
+      audit.record('user_login', { ip, meta: { expiresAt: created.record.expiresAt, mode } });
+      res.json({ authenticated: true, expiresAt: created.record.expiresAt, mustChangePassword: settings.get().mustChangePassword });
     }),
   );
 

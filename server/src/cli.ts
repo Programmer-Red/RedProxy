@@ -80,6 +80,7 @@ function applyServeEnv(flags: Record<string, string | boolean>): void {
     ['idle', 'SESSION_IDLE_SECONDS'],
     ['max-devices', 'MAX_CONCURRENT_DEVICES'],
     ['auth-mode', 'AUTH_MODE'],
+    ['user-auth-mode', 'USER_AUTH_MODE'],
     ['crx-key-bits', 'CRX_KEY_BITS'],
     ['login-max-attempts', 'LOGIN_MAX_ATTEMPTS'],
     ['login-ban-seconds', 'LOGIN_BAN_SECONDS'],
@@ -131,7 +132,8 @@ Serve options:
   --idle <seconds>              Idle timeout for extension heartbeats (default 90)
   --enrollment-ttl <seconds>    Single-use CRX token lifetime (default 120)
   --max-devices <n>             Concurrent sessions (default 2)
-  --auth-mode <totp|totp_password>
+  --auth-mode <password|totp|totp_password>       Admin portal login mode
+  --user-auth-mode <password|totp|totp_password>  User portal login mode
   --cookie-secure               Force Secure cookies
   --no-cookie-secure            Disable Secure cookies
   --allow-insecure-http         Allow extension token distribution over HTTP
@@ -161,7 +163,7 @@ async function serve(flags: Record<string, string | boolean>): Promise<void> {
   if (adminApp) {
     adminServer = adminApp.listen(config.adminPort, config.adminHost, () => {
       console.log(`[RedProxy] admin portal: http://${config.adminHost}:${config.adminPort}/`);
-      console.log(`[RedProxy] admin login mode: ${config.authMode}`);
+      console.log(`[RedProxy] admin login mode: ${config.adminAuthMode}`);
       if (config.adminHost === '0.0.0.0') {
         console.log('[RedProxy] NOTE: the admin portal is bound to all interfaces; protect it with a firewall or set ADMIN_HOST=127.0.0.1.');
       }

@@ -55,12 +55,29 @@ export async function loginUserAgent(app: Express, timestamp = Date.now()) {
   return agent;
 }
 
-/** Log in to the administrator portal. */
-export async function loginAdminAgent(app: Express, options: { timestamp?: number; password?: string } = {}) {
+export const DEFAULT_ADMIN_USERNAME = 'admin';
+export const DEFAULT_ADMIN_PASSWORD = 'redproxy';
+
+/**
+ * Log in to the administrator portal. By default it uses the shipped default
+ * account (password mode). Pass `mode` when the portal has been switched to
+ * another authentication mode.
+ */
+export async function loginAdminAgent(
+  app: Express,
+  options: { timestamp?: number; username?: string; password?: string; token?: string; mode?: 'password' | 'totp' | 'totp_password' } = {},
+) {
   const agent = request.agent(app);
-  const response = await agent
-    .post('/api/auth/totp')
-    .send({ token: currentTotp(TEST_TOTP_SECRET, options.timestamp ?? Date.now()), password: options.password });
+  const mode = options.mode ?? 'password';
+  const body: Record<string, string | undefined> = {};
+  if (mode === 'password' || mode === 'totp_password') {
+    body.username = options.username ?? DEFAULT_ADMIN_USERNAME;
+    body.password = options.password ?? DEFAULT_ADMIN_PASSWORD;
+  }
+  if (mode === 'totp' || mode === 'totp_password') {
+    body.token = options.token ?? currentTotp(TEST_TOTP_SECRET, options.timestamp ?? Date.now());
+  }
+  const response = await agent.post('/api/auth/totp').send(body);
   if (response.status !== 200) {
     throw new Error(`admin login failed in test: ${response.status} ${JSON.stringify(response.body)}`);
   }

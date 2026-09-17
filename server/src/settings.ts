@@ -10,6 +10,10 @@ const PASSWORD_KEY_LENGTH = 64;
 const TOTP_ISSUER = 'RedProxy';
 const TOTP_LABEL = 'admin';
 
+/** Password shipped on first boot. The admin is forced to change it. */
+export const DEFAULT_ADMIN_USERNAME = 'admin';
+export const DEFAULT_ADMIN_PASSWORD = 'redproxy';
+
 export function randomBase32Secret(bytes = 20): string {
   const buffer = crypto.randomBytes(bytes);
   let bits = 0;
@@ -23,9 +27,7 @@ export function randomBase32Secret(bytes = 20): string {
       bits -= 5;
     }
   }
-  if (bits > 0) {
-    output += BASE32_ALPHABET[(value << (5 - bits)) & 31];
-  }
+  if (bits > 0) output += BASE32_ALPHABET[(value << (5 - bits)) & 31];
   return output;
 }
 
@@ -37,10 +39,10 @@ export function normalizeTotpSecret(raw: string): string {
   return normalized.replace(/=+$/, '');
 }
 
-export function buildOtpAuthUri(secretBase32: string): string {
+export function buildOtpAuthUri(secretBase32: string, label = TOTP_LABEL): string {
   const totp = new OTPAuth.TOTP({
     issuer: TOTP_ISSUER,
-    label: TOTP_LABEL,
+    label,
     algorithm: 'SHA1',
     digits: 6,
     period: 30,
@@ -69,8 +71,7 @@ export function verifyTotp(secretBase32: string, token: string, timestamp = Date
     secret: OTPAuth.Secret.fromBase32(secretBase32),
   });
   try {
-    const delta = totp.validate({ token, timestamp, window: 1 });
-    return delta !== null;
+    return totp.validate({ token, timestamp, window: 1 }) !== null;
   } catch {
     return false;
   }
@@ -90,13 +91,17 @@ export function verifyPassword(password: string, hash: string | null, salt: stri
   return crypto.timingSafeEqual(candidate, expected);
 }
 
-export interface PublicAuthSettings {
-  authMode: AuthMode;
-  hasPassword: boolean;
-  totpSecretBase32: string;
-  otpauthUri: string;
-  qrDataUrl: string;
+export interface PublicSettings {
+  username: string;
+  adminAuthMode: AuthMode;
+  userAuthMode: AuthMode;
+  mustChangePassword: boolean;
+  hasTotp: boolean;
+  totpSecretBase32: string | null;
+  otpauthUri: string | null;
+  qrDataUrl: string | null;
   passwordUpdatedAt: number | null;
+  defaults: { username: string; password: string };
 }
 
 export class SettingsService {
@@ -106,24 +111,28 @@ export class SettingsService {
   constructor(
     private readonly config: AppConfig,
     private readonly now: () => number = () => Date.now(),
-    private readonly seedSecret: string | null = null,
+    seedSecret: string | null = null,
   ) {
     this.filePath = path.join(config.dataDir, 'settings.json');
-    this.settings = this.load();
+    this.settings = this.load(seedSecret);
   }
 
-  private load(): AdminSettings {
+  private load(seedSecret: string | null): AdminSettings {
     const timestamp = this.now();
     if (fs.existsSync(this.filePath)) {
       try {
-        const raw = JSON.parse(fs.readFileSync(this.filePath, 'utf8')) as Partial<AdminSettings>;
-        if (raw.totpSecretBase32) {
+        const raw = JSON.parse(fs.readFileSync(this.filePath, 'utf8')) as Partial<AdminSettings> & { authMode?: AuthMode };
+        if (raw.totpSecretBase32 || raw.passwordHash) {
+          const legacyMode = raw.authMode;
           return {
-            authMode: raw.authMode === 'totp_password' ? 'totp_password' : 'totp',
-            totpSecretBase32: normalizeTotpSecret(raw.totpSecretBase32),
+            username: (raw.username || this.config.adminUsername || DEFAULT_ADMIN_USERNAME).trim(),
+            adminAuthMode: normalizeMode(raw.adminAuthMode ?? legacyMode, this.config.adminAuthMode, 'password'),
+            userAuthMode: normalizeMode(raw.userAuthMode, this.config.userAuthMode, 'totp'),
+            totpSecretBase32: raw.totpSecretBase32 ? normalizeTotpSecret(raw.totpSecretBase32) : randomBase32Secret(),
             passwordHash: raw.passwordHash ?? null,
             passwordSalt: raw.passwordSalt ?? null,
             passwordUpdatedAt: raw.passwordUpdatedAt ?? null,
+            mustChangePassword: raw.mustChangePassword ?? !raw.passwordHash,
             createdAt: raw.createdAt ?? timestamp,
             updatedAt: raw.updatedAt ?? timestamp,
           };
@@ -133,28 +142,31 @@ export class SettingsService {
       }
     }
 
-    const seededSecret = this.seedSecret
-      ? normalizeTotpSecret(this.seedSecret)
+    const seededSecret = seedSecret
+      ? normalizeTotpSecret(seedSecret)
       : this.config.adminTotpSecret
         ? normalizeTotpSecret(this.config.adminTotpSecret)
         : randomBase32Secret();
-    const seededPassword = process.env.ADMIN_PASSWORD ? hashPassword(process.env.ADMIN_PASSWORD) : null;
+
+    const initialPassword = this.config.adminPassword || DEFAULT_ADMIN_PASSWORD;
+    const seededPassword = hashPassword(initialPassword);
     const settings: AdminSettings = {
-      authMode: this.config.authMode,
+      username: (this.config.adminUsername || DEFAULT_ADMIN_USERNAME).trim(),
+      adminAuthMode: this.config.adminAuthMode,
+      userAuthMode: this.config.userAuthMode,
       totpSecretBase32: seededSecret,
-      passwordHash: seededPassword?.hash ?? null,
-      passwordSalt: seededPassword?.salt ?? null,
-      passwordUpdatedAt: seededPassword ? timestamp : null,
+      passwordHash: seededPassword.hash,
+      passwordSalt: seededPassword.salt,
+      passwordUpdatedAt: timestamp,
+      mustChangePassword: initialPassword === DEFAULT_ADMIN_PASSWORD,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
     this.settings = settings;
     this.persist();
-    if (this.seedSecret || this.config.adminTotpSecret) {
-      console.log('[RedProxy] initialized TOTP settings from the configured secret');
-    } else {
-      console.log('[RedProxy] generated a new random TOTP secret; configure your authenticator through the admin QR page.');
-    }
+    console.log(
+      `[RedProxy] initialized settings. default admin account: ${settings.username} / ${DEFAULT_ADMIN_PASSWORD} (change it after first login)`,
+    );
     return settings;
   }
 
@@ -167,48 +179,97 @@ export class SettingsService {
     return this.settings;
   }
 
-  getAuthMode(): AuthMode {
-    return this.settings.authMode;
-  }
-
-  async toPublic(): Promise<PublicAuthSettings> {
-    const uri = buildOtpAuthUri(this.settings.totpSecretBase32);
+  async toPublic(): Promise<PublicSettings> {
+    const hasTotp = Boolean(this.settings.totpSecretBase32);
+    const uri = hasTotp ? buildOtpAuthUri(this.settings.totpSecretBase32, this.settings.username) : null;
     return {
-      authMode: this.settings.authMode,
-      hasPassword: Boolean(this.settings.passwordHash && this.settings.passwordSalt),
-      totpSecretBase32: this.settings.totpSecretBase32,
+      username: this.settings.username,
+      adminAuthMode: this.settings.adminAuthMode,
+      userAuthMode: this.settings.userAuthMode,
+      mustChangePassword: this.settings.mustChangePassword,
+      hasTotp,
+      totpSecretBase32: hasTotp ? this.settings.totpSecretBase32 : null,
       otpauthUri: uri,
-      qrDataUrl: await buildQrDataUrl(uri),
+      qrDataUrl: uri ? await buildQrDataUrl(uri) : null,
       passwordUpdatedAt: this.settings.passwordUpdatedAt,
+      defaults: { username: DEFAULT_ADMIN_USERNAME, password: DEFAULT_ADMIN_PASSWORD },
     };
   }
 
-  verifyUserTotp(token: string): boolean {
+  // ------------------------------------------------------------------ auth
+  verifyTotp(token: string): boolean {
     return verifyTotp(this.settings.totpSecretBase32, token, this.now());
   }
 
-  verifyUserPassword(password: string): boolean {
+  verifyPassword(password: string): boolean {
     return verifyPassword(password, this.settings.passwordHash, this.settings.passwordSalt);
   }
 
-  setAuthMode(mode: AuthMode): AdminSettings {
-    if (mode === 'totp_password' && !this.settings.passwordHash) {
+  /**
+   * Verify a credential pair for the given realm. Each mode has its own rules,
+   * so the admin can independently decide how the user portal and the admin
+   * portal authenticate.
+   */
+  verifyLogin(mode: AuthMode, input: { token?: string; password?: string; username?: string }): { ok: boolean; reason?: string } {
+    if (input.username && input.username.trim() && input.username.trim() !== this.settings.username) {
+      return { ok: false, reason: 'bad_credentials' };
+    }
+    const tokenOk = input.token ? this.verifyTotp(input.token) : false;
+    const passwordOk = input.password ? this.verifyPassword(input.password) : false;
+
+    switch (mode) {
+      case 'password':
+        return passwordOk ? { ok: true } : { ok: false, reason: 'bad_credentials' };
+      case 'totp':
+        return tokenOk ? { ok: true } : { ok: false, reason: 'bad_totp' };
+      case 'totp_password':
+        if (!tokenOk || !passwordOk) return { ok: false, reason: 'bad_credentials' };
+        return { ok: true };
+      default:
+        return { ok: false, reason: 'bad_mode' };
+    }
+  }
+
+  setAdminAuthMode(mode: AuthMode): AdminSettings {
+    if ((mode === 'password' || mode === 'totp_password') && !this.settings.passwordHash) {
       throw new Error('password_required');
     }
-    this.settings.authMode = mode;
+    if ((mode === 'totp' || mode === 'totp_password') && !this.settings.totpSecretBase32) {
+      throw new Error('totp_required');
+    }
+    this.settings.adminAuthMode = mode;
+    this.settings.updatedAt = this.now();
+    this.persist();
+    return this.settings;
+  }
+
+  setUserAuthMode(mode: AuthMode): AdminSettings {
+    if ((mode === 'password' || mode === 'totp_password') && !this.settings.passwordHash) {
+      throw new Error('password_required');
+    }
+    if ((mode === 'totp' || mode === 'totp_password') && !this.settings.totpSecretBase32) {
+      throw new Error('totp_required');
+    }
+    this.settings.userAuthMode = mode;
+    this.settings.updatedAt = this.now();
+    this.persist();
+    return this.settings;
+  }
+
+  setUsername(username: string): AdminSettings {
+    this.settings.username = username.trim();
     this.settings.updatedAt = this.now();
     this.persist();
     return this.settings;
   }
 
   setPassword(password: string): AdminSettings {
-    if (password.length < 12) {
-      throw new Error('password_too_short');
-    }
+    if (password.length < 8) throw new Error('password_too_short');
     const { hash, salt } = hashPassword(password);
     this.settings.passwordHash = hash;
     this.settings.passwordSalt = salt;
     this.settings.passwordUpdatedAt = this.now();
+    this.settings.mustChangePassword = false;
     this.settings.updatedAt = this.now();
     this.persist();
     return this.settings;
@@ -218,7 +279,12 @@ export class SettingsService {
     this.settings.passwordHash = null;
     this.settings.passwordSalt = null;
     this.settings.passwordUpdatedAt = null;
-    this.settings.authMode = 'totp';
+    if (this.settings.adminAuthMode === 'password' || this.settings.adminAuthMode === 'totp_password') {
+      this.settings.adminAuthMode = 'totp';
+    }
+    if (this.settings.userAuthMode === 'password' || this.settings.userAuthMode === 'totp_password') {
+      this.settings.userAuthMode = 'totp';
+    }
     this.settings.updatedAt = this.now();
     this.persist();
     return this.settings;
@@ -230,4 +296,11 @@ export class SettingsService {
     this.persist();
     return this.settings;
   }
+}
+
+function normalizeMode(value: string | undefined, fallback: AuthMode, defaultMode: AuthMode): AuthMode {
+  if (value === 'password' || value === 'totp' || value === 'totp_password') return value;
+  if (value === 'admin_password') return 'password';
+  if (value) return fallback;
+  return fallback ?? defaultMode;
 }

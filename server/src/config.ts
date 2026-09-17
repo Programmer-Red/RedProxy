@@ -19,11 +19,11 @@ function boolFromEnv(value: string | undefined, fallback: boolean): boolean {
   throw new Error(`Invalid boolean value "${value}"`);
 }
 
-function authModeFromEnv(value: string | undefined): AuthMode {
-  if (value === undefined || value.trim() === '') return 'totp';
+function authModeFromEnv(value: string | undefined, fallback: AuthMode): AuthMode {
+  if (value === undefined || value.trim() === '') return fallback;
   const normalized = value.trim().toLowerCase();
-  if (normalized === 'totp' || normalized === 'totp_password') return normalized;
-  throw new Error(`Invalid AUTH_MODE "${value}" (expected totp or totp_password)`);
+  if (normalized === 'password' || normalized === 'totp' || normalized === 'totp_password') return normalized;
+  throw new Error(`Invalid auth mode "${value}" (expected password, totp or totp_password)`);
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -58,7 +58,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     trustProxy: boolFromEnv(env.TRUST_PROXY, false),
     allowInsecureHttp: boolFromEnv(env.ALLOW_INSECURE_HTTP, false),
     adminTotpSecret: env.ADMIN_TOTP_SECRET?.trim() || null,
-    authMode: authModeFromEnv(env.AUTH_MODE),
+    adminAuthMode: authModeFromEnv(env.AUTH_MODE, 'password'),
+    userAuthMode: authModeFromEnv(env.USER_AUTH_MODE, 'totp'),
+    adminUsername: (env.ADMIN_USERNAME || 'admin').trim() || 'admin',
+    adminPassword: env.ADMIN_PASSWORD || 'redproxy',
     staticDir: env.STATIC_DIR ? path.resolve(env.STATIC_DIR) : null,
     templateDir: env.EXTENSION_TEMPLATE_DIR ? path.resolve(env.EXTENSION_TEMPLATE_DIR) : null,
   };
@@ -92,7 +95,10 @@ export function toTestConfig(overrides: Partial<AppConfig> & { dataDir: string }
     trustProxy: false,
     allowInsecureHttp: true,
     adminTotpSecret: null,
-    authMode: 'totp',
+    adminAuthMode: 'password',
+    userAuthMode: 'totp',
+    adminUsername: 'admin',
+    adminPassword: 'redproxy',
     staticDir: null,
     templateDir: null,
     ...overrides,

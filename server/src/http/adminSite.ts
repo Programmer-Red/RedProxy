@@ -104,9 +104,11 @@ export function createAdminSite(options: AdminSiteOptions): express.Express {
   });
 
   app.get('/api/auth/mode', (_req, res) => {
+    const mode = settings.get().adminAuthMode;
     res.json({
-      authMode: settings.getAuthMode(),
-      passwordRequired: settings.getAuthMode() === 'totp_password',
+      authMode: mode,
+      passwordRequired: mode === 'password' || mode === 'totp_password',
+      totpRequired: mode === 'totp' || mode === 'totp_password',
     });
   });
 
@@ -115,8 +117,9 @@ export function createAdminSite(options: AdminSiteOptions): express.Express {
     asyncHandler(async (req, res) => {
       const parsed = z
         .object({
-          token: z.string().regex(/^\d{6}$/, 'token must be exactly 6 digits'),
+          token: z.string().regex(/^\d{6}$/, 'token must be exactly 6 digits').optional(),
           password: z.string().max(512).optional(),
+          username: z.string().max(128).optional(),
         })
         .safeParse(req.body);
       if (!parsed.success) throwValidation(parsed.error);
@@ -131,16 +134,12 @@ export function createAdminSite(options: AdminSiteOptions): express.Express {
         });
       }
 
-      const totpOk = settings.verifyUserTotp(parsed.data.token);
-      const passwordRequired = settings.getAuthMode() === 'totp_password';
-      const passwordOk = !passwordRequired || settings.verifyUserPassword(parsed.data.password ?? '');
-      if (!totpOk || !passwordOk) {
+      const mode = settings.get().adminAuthMode;
+      const result = settings.verifyLogin(mode, parsed.data);
+      if (!result.ok) {
         const after = rateLimiter.recordFailure(ip);
-        audit.record('admin_login_failed', {
-          ip,
-          meta: { totpOk, passwordOk: passwordRequired ? passwordOk : null, banned: after.banned },
-        });
-        throw new HttpError(401, 'invalid_credentials', 'Invalid TOTP code or password', {
+        audit.record('admin_login_failed', { ip, meta: { mode, reason: result.reason, banned: after.banned } });
+        throw new HttpError(401, 'invalid_credentials', 'Invalid credentials', {
           attemptsRemaining: after.attemptsRemaining,
           banned: after.banned,
           retryAfterSeconds: after.retryAfterSeconds,
@@ -150,8 +149,8 @@ export function createAdminSite(options: AdminSiteOptions): express.Express {
       rateLimiter.clear(ip);
       const created = auth.createSession('admin');
       res.cookie(ADMIN_COOKIE_NAME, created.token, cookieOptions(config));
-      audit.record('admin_login', { ip, meta: { expiresAt: created.record.expiresAt, authMode: settings.getAuthMode() } });
-      res.json({ authenticated: true, expiresAt: created.record.expiresAt });
+      audit.record('admin_login', { ip, meta: { expiresAt: created.record.expiresAt, mode } });
+      res.json({ authenticated: true, expiresAt: created.record.expiresAt, mustChangePassword: settings.get().mustChangePassword });
     }),
   );
 
@@ -172,7 +171,12 @@ export function createAdminSite(options: AdminSiteOptions): express.Express {
       next(new HttpError(401, 'unauthorized', 'Administrator login required'));
       return;
     }
-    res.json({ authenticated: true, expiresAt: record.expiresAt, authMode: settings.getAuthMode() });
+    res.json({
+      authenticated: true,
+      expiresAt: record.expiresAt,
+      authMode: settings.get().adminAuthMode,
+      mustChangePassword: settings.get().mustChangePassword,
+    });
   });
 
   // ---------------------------------------------------------------- settings
@@ -188,17 +192,34 @@ export function createAdminSite(options: AdminSiteOptions): express.Express {
     '/api/settings',
     requireAdminAuth,
     asyncHandler(async (req, res) => {
-      const parsed = z.object({ authMode: z.enum(['totp', 'totp_password']) }).safeParse(req.body);
+      const parsed = z
+        .object({
+          adminAuthMode: z.enum(['password', 'totp', 'totp_password']).optional(),
+          userAuthMode: z.enum(['password', 'totp', 'totp_password']).optional(),
+          username: z.string().trim().min(1).max(64).optional(),
+        })
+        .safeParse(req.body);
       if (!parsed.success) throwValidation(parsed.error);
       try {
-        settings.setAuthMode(parsed.data.authMode);
+        if (parsed.data.adminAuthMode) settings.setAdminAuthMode(parsed.data.adminAuthMode);
+        if (parsed.data.userAuthMode) settings.setUserAuthMode(parsed.data.userAuthMode);
+        if (parsed.data.username) settings.setUsername(parsed.data.username);
       } catch (error) {
         if (error instanceof Error && error.message === 'password_required') {
-          throw new HttpError(409, 'password_required', 'Set an admin password before switching to TOTP + password');
+          throw new HttpError(409, 'password_required', 'Set a password before enabling password authentication');
+        }
+        if (error instanceof Error && error.message === 'totp_required') {
+          throw new HttpError(409, 'totp_required', 'Generate a TOTP secret before enabling TOTP authentication');
         }
         throw error;
       }
-      audit.record('auth_mode_changed', { meta: { authMode: parsed.data.authMode } });
+      audit.record('settings_changed', {
+        meta: {
+          adminAuthMode: parsed.data.adminAuthMode,
+          userAuthMode: parsed.data.userAuthMode,
+          username: parsed.data.username,
+        },
+      });
       res.json(await settings.toPublic());
     }),
   );
@@ -207,7 +228,7 @@ export function createAdminSite(options: AdminSiteOptions): express.Express {
     '/api/settings/password',
     requireAdminAuth,
     asyncHandler(async (req, res) => {
-      const parsed = z.object({ password: z.string().min(12).max(512) }).safeParse(req.body);
+      const parsed = z.object({ password: z.string().min(8).max(512) }).safeParse(req.body);
       if (!parsed.success) throwValidation(parsed.error);
       settings.setPassword(parsed.data.password);
       audit.record('admin_password_changed');
@@ -231,7 +252,7 @@ export function createAdminSite(options: AdminSiteOptions): express.Express {
     asyncHandler(async (req, res) => {
       const parsed = z.object({ currentTotp: z.string().regex(/^\d{6}$/) }).safeParse(req.body);
       if (!parsed.success) throwValidation(parsed.error);
-      if (!settings.verifyUserTotp(parsed.data.currentTotp)) {
+      if (!settings.verifyTotp(parsed.data.currentTotp)) {
         throw new HttpError(401, 'invalid_totp', 'Current TOTP code is invalid');
       }
       settings.regenerateTotpSecret();

@@ -1,7 +1,7 @@
 export type ProxyScheme = 'http' | 'https' | 'socks4' | 'socks5';
 export type NodeKind = 'proxy' | 'xray';
 export type XrayProtocol = 'vless' | 'vmess' | 'trojan' | 'shadowsocks';
-export type AuthMode = 'totp' | 'totp_password';
+export type AuthMode = 'password' | 'totp' | 'totp_password';
 export type AuthRealm = 'user' | 'admin';
 
 export interface XraySettings {
@@ -145,11 +145,15 @@ export interface ExtensionRuntimeConfig {
 }
 
 export interface AdminSettings {
-  authMode: AuthMode;
+  username: string;
+  adminAuthMode: AuthMode;
+  userAuthMode: AuthMode;
   totpSecretBase32: string;
   passwordHash: string | null;
   passwordSalt: string | null;
   passwordUpdatedAt: number | null;
+  /** True while the account still uses the shipped default password. */
+  mustChangePassword: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -178,7 +182,10 @@ export interface AppConfig {
   trustProxy: boolean;
   allowInsecureHttp: boolean;
   adminTotpSecret: string | null;
-  authMode: AuthMode;
+  adminAuthMode: AuthMode;
+  userAuthMode: AuthMode;
+  adminUsername: string;
+  adminPassword: string;
   staticDir: string | null;
   templateDir: string | null;
 }

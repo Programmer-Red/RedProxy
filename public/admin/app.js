@@ -2,22 +2,23 @@
 
 const state = {
   authenticated: false,
-  config: null,
+  authMode: 'password',
   nodes: [],
   sessions: [],
   logs: [],
   bans: [],
-  authSettings: null,
+  settings: null,
   activeTab: 'nodes',
+  mustChangePassword: false,
 };
 
 let pollTimer = null;
 
-function $(id) { return document.getElementById(id); }
-function setText(id, value) { const node = $(id); if (node) node.textContent = value; }
-function setHidden(id, hidden) { const node = $(id); if (node) node.classList.toggle('hidden', hidden); }
+const $ = id => document.getElementById(id);
+const setText = (id, value) => { const el = $(id); if (el) el.textContent = value; };
+const toggle = (id, hidden) => { const el = $(id); if (el) el.classList.toggle('hidden', hidden); };
 
-function escapeHtml(value) {
+function esc(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;').replaceAll("'", '&#39;');
@@ -36,12 +37,19 @@ function fmtRemaining(seconds) {
   return [h ? `${h}h` : '', m ? `${m}m` : '', `${s}s`].filter(Boolean).join(' ');
 }
 
-function downloadBlob(filename, content, type) {
+function download(filename, content, type) {
   const blob = new Blob([content], { type: type || 'application/octet-stream' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url; a.download = filename; a.click();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+function showAlert(id, message) {
+  const el = $(id);
+  if (!el) return;
+  el.textContent = message;
+  el.classList.toggle('hidden', !message);
 }
 
 async function api(path, options = {}) {
@@ -58,7 +66,8 @@ async function api(path, options = {}) {
   if (!response.ok) {
     if (response.status === 401 && state.authenticated) setAuthenticated(false);
     const error = new Error((data && (data.message || data.error)) || `HTTP ${response.status}`);
-    error.status = response.status; error.data = data;
+    error.status = response.status;
+    error.data = data;
     throw error;
   }
   return data;
@@ -66,38 +75,56 @@ async function api(path, options = {}) {
 
 function setAuthenticated(value) {
   state.authenticated = value;
-  setHidden('login-view', value);
-  setHidden('main-view', !value);
-  setHidden('top-actions', !value);
+  toggle('login-view', value);
+  toggle('main-view', !value);
+  toggle('logout-button', !value);
 }
 
 async function loadAuthMode() {
   try {
     const data = await api('/api/auth/mode');
-    const field = $('password-field');
-    if (field) field.classList.toggle('hidden', data.authMode !== 'totp_password');
-    setText('password-hint', data.authMode === 'totp_password' ? '和管理员密码' : '');
+    state.authMode = data.authMode;
+    toggle('username-field', !data.passwordRequired);
+    toggle('password-field', !data.passwordRequired);
+    toggle('totp-field', !data.totpRequired);
+    setText('login-hint',
+      data.passwordRequired && data.totpRequired ? '请输入用户名、密码和动态验证码。'
+        : data.passwordRequired ? '请输入用户名和密码。'
+          : '请输入动态验证码。');
   } catch (err) { console.error('auth mode', err); }
+}
+
+async function loadDefaultHint() {
+  try {
+    const settings = await api('/api/settings').catch(() => null);
+    if (settings && settings.defaults) {
+      setText('default-hint', `首次部署默认账号：${settings.defaults.username} / ${settings.defaults.password}，登录后请立即修改。`);
+    }
+  } catch (_err) { /* not logged in yet */ }
 }
 
 async function login(event) {
   event.preventDefault();
-  setText('login-error', '');
-  const token = $('totp-token').value.trim();
-  const password = $('admin-password') ? $('admin-password').value : '';
+  showAlert('login-error', '');
   try {
-    await api('/api/auth/totp', { method: 'POST', body: { token, password } });
+    const data = await api('/api/auth/totp', {
+      method: 'POST',
+      body: {
+        username: $('username-field').classList.contains('hidden') ? undefined : $('username').value.trim(),
+        password: $('password-field').classList.contains('hidden') ? undefined : $('password').value,
+        token: $('totp-field').classList.contains('hidden') ? undefined : $('totp-token').value.trim(),
+      },
+    });
+    state.mustChangePassword = Boolean(data.mustChangePassword);
     setAuthenticated(true);
-    $('totp-token').value = '';
-    if ($('admin-password')) $('admin-password').value = '';
     await refreshAll();
     startPolling();
   } catch (err) {
     const details = err.data && err.data.details;
     let suffix = '';
     if (details && typeof details.attemptsRemaining === 'number') suffix = `（剩余尝试：${details.attemptsRemaining}）`;
-    if (details && details.banned) suffix = `（该 IP 已被临时封禁，请 ${details.retryAfterSeconds}s 后再试）`;
-    setText('login-error', `${err.message}${suffix}`);
+    if (details && details.banned) suffix = `（IP 已临时封禁，请 ${details.retryAfterSeconds}s 后再试）`;
+    showAlert('login-error', `${err.message}${suffix}`);
   }
 }
 
@@ -110,8 +137,10 @@ async function logout() {
 
 async function checkAuth() {
   await loadAuthMode();
+  await loadDefaultHint();
   try {
-    await api('/api/me');
+    const me = await api('/api/me');
+    state.mustChangePassword = Boolean(me.mustChangePassword);
     setAuthenticated(true);
     await refreshAll();
     startPolling();
@@ -125,14 +154,13 @@ async function refreshAll() {
   await Promise.all([loadNodes(), loadSessions(), loadSecurity(), loadLogs()]);
 }
 
+// ------------------------------------------------------------------ nodes
 async function loadNodes() {
   const data = await api('/api/nodes');
   state.nodes = data.nodes || [];
   renderNodes();
   renderXray();
 }
-
-function nodeProxyAddress(node) { return `${node.host}:${node.port}`; }
 
 function nodeLocalAddress(node) {
   if (node.kind !== 'xray') return `${node.scheme}://${node.host}:${node.port}`;
@@ -141,35 +169,33 @@ function nodeLocalAddress(node) {
 
 function renderNodes() {
   const body = $('nodes-body');
-  if (!body) return;
   body.innerHTML = '';
   if (state.nodes.length === 0) {
-    body.innerHTML = '<tr><td colspan="6" class="muted">暂无节点</td></tr>';
+    body.innerHTML = '<tr><td colspan="6" class="empty">暂无节点</td></tr>';
     return;
   }
   state.nodes.forEach(node => {
     const tr = document.createElement('tr');
-    const type = node.kind === 'xray' ? `Xray/${node.xray ? node.xray.protocol : '?'}` : node.scheme;
-    const actions = [
-      `<button class="secondary small" data-action="toggle" data-id="${escapeHtml(node.id)}">${node.enabled ? '停用' : '启用'}</button>`,
-      node.kind === 'xray' ? `<button class="secondary small" data-action="xray" data-id="${escapeHtml(node.id)}">导出配置</button>` : '',
-      `<button class="danger small" data-action="delete" data-id="${escapeHtml(node.id)}">删除</button>`,
-    ].filter(Boolean).join(' ');
+    const type = node.kind === 'xray' ? `Xray · ${node.xray ? node.xray.protocol : '?'}` : node.scheme;
     tr.innerHTML = `
-      <td>${escapeHtml(node.name)}</td>
-      <td>${escapeHtml(type)}</td>
-      <td class="mono">${escapeHtml(nodeProxyAddress(node))}</td>
-      <td class="mono">${escapeHtml(nodeLocalAddress(node))}</td>
-      <td>${node.enabled ? '<span class="ok">启用</span>' : '<span class="muted">停用</span>'}${node.hasAuth ? ' · 认证' : ''}</td>
-      <td>${actions}</td>`;
+      <td>${esc(node.name)}</td>
+      <td>${esc(type)}</td>
+      <td class="mono">${esc(node.host)}:${esc(node.port)}</td>
+      <td class="mono">${esc(nodeLocalAddress(node))}</td>
+      <td>${node.enabled ? '<span class="ok">启用</span>' : '<span class="muted">停用</span>'}</td>
+      <td class="row-actions">
+        <button class="btn ghost small" data-action="toggle" data-id="${esc(node.id)}">${node.enabled ? '停用' : '启用'}</button>
+        ${node.kind === 'xray' ? `<button class="btn ghost small" data-action="xray" data-id="${esc(node.id)}">导出配置</button>` : ''}
+        <button class="btn danger small" data-action="delete" data-id="${esc(node.id)}">删除</button>
+      </td>`;
     body.appendChild(tr);
   });
 }
 
 function syncNodeKindFields() {
   const kind = $('node-kind').value;
-  $('proxy-fields').classList.toggle('hidden', kind !== 'proxy');
-  $('xray-fields').classList.toggle('hidden', kind !== 'xray');
+  toggle('proxy-fields', kind !== 'proxy');
+  toggle('xray-fields', kind !== 'xray');
 }
 
 function buildNodePayload() {
@@ -186,26 +212,6 @@ function buildNodePayload() {
       password: $('proxy-password').value || null,
     };
   }
-  const protocol = $('xray-protocol').value;
-  const xray = {
-    protocol,
-    uuid: $('xray-uuid').value.trim() || null,
-    password: $('xray-password').value || null,
-    method: $('xray-method').value.trim() || null,
-    alterId: Number($('xray-alterid').value || 0),
-    flow: $('xray-flow').value.trim() || null,
-    network: $('xray-network').value || 'tcp',
-    security: $('xray-security').value || null,
-    sni: $('xray-sni').value.trim() || null,
-    host: $('xray-host-header').value.trim() || null,
-    path: $('xray-path').value.trim() || null,
-    serviceName: $('xray-path').value.trim() || null,
-    fingerprint: $('xray-fingerprint').value.trim() || null,
-    publicKey: $('xray-public-key').value.trim() || null,
-    shortId: $('xray-short-id').value.trim() || null,
-    spiderX: $('xray-spider-x').value.trim() || null,
-    allowInsecure: false,
-  };
   return {
     kind, name, enabled,
     scheme: 'socks5',
@@ -213,7 +219,25 @@ function buildNodePayload() {
     port: Number($('xray-port').value),
     username: null,
     password: null,
-    xray,
+    xray: {
+      protocol: $('xray-protocol').value,
+      uuid: $('xray-uuid').value.trim() || null,
+      password: $('xray-password').value || null,
+      method: $('xray-method').value.trim() || null,
+      alterId: Number($('xray-alterid').value || 0),
+      flow: $('xray-flow').value.trim() || null,
+      network: $('xray-network').value || 'tcp',
+      security: $('xray-security').value || null,
+      sni: $('xray-sni').value.trim() || null,
+      host: $('xray-host-header').value.trim() || null,
+      path: $('xray-path').value.trim() || null,
+      serviceName: $('xray-path').value.trim() || null,
+      fingerprint: $('xray-fingerprint').value.trim() || null,
+      publicKey: $('xray-public-key').value.trim() || null,
+      shortId: $('xray-short-id').value.trim() || null,
+      spiderX: $('xray-spider-x').value.trim() || null,
+      allowInsecure: false,
+    },
     localScheme: $('local-scheme').value,
     localHost: $('local-host').value.trim() || '127.0.0.1',
     localPort: Number($('local-port').value || 10808),
@@ -222,13 +246,13 @@ function buildNodePayload() {
 
 async function addNode(event) {
   event.preventDefault();
-  setText('node-error', '');
+  showAlert('node-error', '');
   try {
     await api('/api/nodes', { method: 'POST', body: buildNodePayload() });
     $('node-form').reset();
     syncNodeKindFields();
     await loadNodes();
-  } catch (err) { setText('node-error', err.message); }
+  } catch (err) { showAlert('node-error', err.message); }
 }
 
 async function handleNodeAction(event) {
@@ -236,14 +260,13 @@ async function handleNodeAction(event) {
   if (!button) return;
   const id = button.getAttribute('data-id');
   const action = button.getAttribute('data-action');
-  if (!id || !action) return;
   try {
     if (action === 'delete') {
       if (!window.confirm('确定删除该节点？')) return;
       await api(`/api/nodes/${encodeURIComponent(id)}`, { method: 'DELETE' });
       await loadNodes();
     } else if (action === 'toggle') {
-      const node = state.nodes.find(item => item.id === id);
+      const node = state.nodes.find(n => n.id === id);
       if (!node) return;
       await api(`/api/nodes/${encodeURIComponent(id)}`, { method: 'PATCH', body: { enabled: !node.enabled } });
       await loadNodes();
@@ -252,48 +275,33 @@ async function handleNodeAction(event) {
       const output = $('xray-config-output');
       output.textContent = JSON.stringify(config, null, 2);
       output.classList.remove('hidden');
-      downloadBlob(`${id}-xray.json`, JSON.stringify(config, null, 2), 'application/json');
+      download(`${id}-xray.json`, JSON.stringify(config, null, 2), 'application/json');
     }
-  } catch (err) { setText('node-error', err.message); }
+  } catch (err) { showAlert('node-error', err.message); }
 }
 
+// ------------------------------------------------------------------ sessions
 async function loadSessions() {
   const data = await api('/api/sessions');
   state.sessions = data.sessions || [];
-  setText('max-devices', `最大并发设备：${data.maxConcurrentDevices ?? '-'}`);
-  renderSessions();
-}
-
-function sessionStateLabel(s) {
-  switch (s.state) {
-    case 'active': return '活跃';
-    case 'pending': return '待安装';
-    case 'revoked': return '已撤销';
-    case 'expired': return '已过期/空闲';
-    default: return s.state;
-  }
-}
-
-function renderSessions() {
+  setText('max-devices', `最大并发设备 ${data.maxConcurrentDevices ?? '-'}`);
   const body = $('sessions-body');
-  if (!body) return;
   body.innerHTML = '';
   if (state.sessions.length === 0) {
-    body.innerHTML = '<tr><td colspan="7" class="muted">暂无会话</td></tr>';
+    body.innerHTML = '<tr><td colspan="7" class="empty">暂无会话</td></tr>';
     return;
   }
   state.sessions.forEach(session => {
+    const active = session.state === 'active' || session.state === 'pending';
     const tr = document.createElement('tr');
-    const revoke = session.state === 'active' || session.state === 'pending'
-      ? `<button class="danger small" data-action="revoke" data-id="${escapeHtml(session.id)}">撤销</button>` : '-';
     tr.innerHTML = `
-      <td class="mono">${escapeHtml(session.deviceId)}</td>
-      <td class="mono">${escapeHtml(session.ip || '-')}</td>
-      <td>${escapeHtml(session.nodeName)}</td>
-      <td>${sessionStateLabel(session)}${session.enrolled ? ' · 已绑定' : ''}</td>
+      <td class="mono">${esc(session.deviceId)}</td>
+      <td class="mono">${esc(session.ip || '-')}</td>
+      <td>${esc(session.nodeName)}</td>
+      <td>${esc(session.state)}${session.enrolled ? ' · 已绑定' : ''}</td>
       <td>${session.remainingSeconds > 0 ? fmtRemaining(session.remainingSeconds) : '-'}</td>
       <td>${fmtTime(session.expiresAt)}</td>
-      <td>${revoke}</td>`;
+      <td class="row-actions">${active ? `<button class="btn danger small" data-action="revoke" data-id="${esc(session.id)}">撤销</button>` : ''}</td>`;
     body.appendChild(tr);
   });
 }
@@ -301,104 +309,139 @@ function renderSessions() {
 async function handleSessionAction(event) {
   const button = event.target.closest('button[data-action="revoke"]');
   if (!button) return;
-  const id = button.getAttribute('data-id');
-  if (!id) return;
   try {
-    await api(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    await api(`/api/sessions/${encodeURIComponent(button.getAttribute('data-id'))}`, { method: 'DELETE' });
     await loadSessions();
-  } catch (err) { setText('admin-error', err.message); }
+  } catch (err) { showAlert('admin-error', err.message); }
 }
 
+// ------------------------------------------------------------------ security
 async function loadSecurity() {
   try {
     const data = await api('/api/settings');
-    state.authSettings = data;
-    $('auth-mode').value = data.authMode;
-    $('totp-qr').src = data.qrDataUrl;
-    setText('totp-uri', `${data.otpauthUri}\n密钥：${data.totpSecretBase32}`);
+    state.settings = data;
+    $('admin-auth-mode').value = data.adminAuthMode;
+    $('user-auth-mode').value = data.userAuthMode;
+    $('username-input').value = data.username;
+    if (data.qrDataUrl) {
+      $('totp-qr').src = data.qrDataUrl;
+      $('totp-qr').classList.remove('hidden');
+      setText('totp-uri', data.otpauthUri || '');
+    } else {
+      $('totp-qr').classList.add('hidden');
+      setText('totp-uri', '尚未生成 TOTP 密钥');
+    }
+    if (data.mustChangePassword) {
+      toggle('force-change', false);
+      toggle('admin-body', true);
+    } else {
+      toggle('force-change', true);
+      toggle('admin-body', false);
+    }
   } catch (err) { console.error('security', err); }
+
   try {
     const bans = await api('/api/login-bans');
     state.bans = bans.bans || [];
-    setText('ban-config', `按 ${bans.config.key} 计数：${bans.config.windowSeconds}s 内失败 ${bans.config.maxAttempts} 次 → 封禁 ${bans.config.banSeconds}s（可在下方手动解封）`);
-    renderBans();
+    setText('ban-config', `${bans.config.windowSeconds}s 内失败 ${bans.config.maxAttempts} 次 → 封禁 ${bans.config.banSeconds}s（按 ${bans.config.key}）`);
+    const body = $('bans-body');
+    body.innerHTML = '';
+    if (state.bans.length === 0) {
+      body.innerHTML = '<tr><td colspan="4" class="empty">当前没有封禁</td></tr>';
+    } else {
+      state.bans.forEach(ban => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td class="mono">${esc(ban.ip)}</td>
+          <td>${fmtTime(ban.bannedUntil)}</td>
+          <td>${fmtTime(ban.lastFailureAt)}</td>
+          <td class="row-actions"><button class="btn ghost small" data-action="unban" data-ip="${esc(ban.ip)}">解封</button></td>`;
+        body.appendChild(tr);
+      });
+    }
   } catch (err) { console.error('bans', err); }
-}
-
-function renderBans() {
-  const body = $('bans-body');
-  if (!body) return;
-  body.innerHTML = '';
-  if (state.bans.length === 0) {
-    body.innerHTML = '<tr><td colspan="4" class="muted">当前没有被封禁的 IP</td></tr>';
-    return;
-  }
-  state.bans.forEach(ban => {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td class="mono">${escapeHtml(ban.ip)}</td>
-      <td>${fmtTime(ban.bannedUntil)}</td>
-      <td>${fmtTime(ban.lastFailureAt)}</td>
-      <td><button class="secondary small" data-action="unban" data-ip="${escapeHtml(ban.ip)}">解封</button></td>`;
-    body.appendChild(tr);
-  });
 }
 
 async function handleBanAction(event) {
   const button = event.target.closest('button[data-action="unban"]');
   if (!button) return;
-  const ip = button.getAttribute('data-ip');
-  if (!ip) return;
   try {
-    await api(`/api/login-bans/${encodeURIComponent(ip)}`, { method: 'DELETE' });
+    await api(`/api/login-bans/${encodeURIComponent(button.getAttribute('data-ip'))}`, { method: 'DELETE' });
     await loadSecurity();
-  } catch (err) { setText('security-message', err.message); }
+  } catch (err) { showAlert('security-message', err.message); }
 }
 
-async function saveAuthMode() {
-  setText('security-message', '');
+async function saveModes() {
+  showAlert('security-message', '');
   try {
-    await api('/api/settings', { method: 'PATCH', body: { authMode: $('auth-mode').value } });
-    setText('security-message', '认证方式已保存');
+    await api('/api/settings', {
+      method: 'PATCH',
+      body: { adminAuthMode: $('admin-auth-mode').value, userAuthMode: $('user-auth-mode').value },
+    });
+    showAlert('security-message', '登录方式已保存');
     await Promise.all([loadSecurity(), loadAuthMode()]);
-  } catch (err) { setText('security-message', err.message); }
+  } catch (err) { showAlert('security-message', err.message); }
 }
 
-async function savePassword() {
-  setText('security-message', '');
+async function saveAccount() {
+  showAlert('security-message', '');
+  const username = $('username-input').value.trim();
+  const password = $('new-password').value;
+  const confirm = $('new-password-confirm').value;
+  if (password && password !== confirm) {
+    showAlert('security-message', '两次输入的密码不一致');
+    return;
+  }
   try {
-    await api('/api/settings/password', { method: 'POST', body: { password: $('new-password').value } });
+    if (username) await api('/api/settings', { method: 'PATCH', body: { username } });
+    if (password) await api('/api/settings/password', { method: 'POST', body: { password } });
     $('new-password').value = '';
-    setText('security-message', '密码已设置');
+    $('new-password-confirm').value = '';
+    showAlert('security-message', '账号已更新');
     await loadSecurity();
-  } catch (err) { setText('security-message', err.message); }
+  } catch (err) { showAlert('security-message', err.message); }
+}
+
+async function forceChangePassword(event) {
+  event.preventDefault();
+  showAlert('force-error', '');
+  const password = $('force-password').value;
+  const confirm = $('force-password-confirm').value;
+  if (password !== confirm) { showAlert('force-error', '两次输入的密码不一致'); return; }
+  try {
+    await api('/api/settings/password', { method: 'POST', body: { password } });
+    $('force-password').value = '';
+    $('force-password-confirm').value = '';
+    state.mustChangePassword = false;
+    await loadSecurity();
+  } catch (err) { showAlert('force-error', err.message); }
 }
 
 async function clearPassword() {
-  setText('security-message', '');
+  showAlert('security-message', '');
   try {
     await api('/api/settings/password', { method: 'DELETE' });
-    setText('security-message', '密码已清除，认证方式已回退为仅 TOTP');
+    showAlert('security-message', '密码已清除，依赖密码的登录方式已自动回退为仅 TOTP');
     await Promise.all([loadSecurity(), loadAuthMode()]);
-  } catch (err) { setText('security-message', err.message); }
+  } catch (err) { showAlert('security-message', err.message); }
 }
 
 async function regenerateTotp() {
-  setText('security-message', '');
+  showAlert('security-message', '');
   try {
     await api('/api/settings/totp/regenerate', { method: 'POST', body: { currentTotp: $('current-totp').value.trim() } });
     $('current-totp').value = '';
-    setText('security-message', '已生成新的随机密钥，请重新扫码绑定；用户门户也会同步使用新密钥');
+    showAlert('security-message', '已生成新密钥，请重新扫码绑定');
     await loadSecurity();
-  } catch (err) { setText('security-message', err.message); }
+  } catch (err) { showAlert('security-message', err.message); }
 }
 
+// ------------------------------------------------------------------ xray / transfer
 async function importLinks() {
   setText('xray-message', '');
   try {
-    const text = $('xray-links').value;
-    const result = await api('/api/nodes/import', { method: 'POST', body: { text } });
-    setText('xray-message', `导入成功 ${result.importedCount} 个，失败 ${result.errorCount} 个`);
+    const result = await api('/api/nodes/import', { method: 'POST', body: { text: $('xray-links').value } });
+    setText('xray-message', `导入 ${result.importedCount} 个，失败 ${result.errorCount} 个`);
     $('xray-links').value = '';
     await loadNodes();
   } catch (err) { setText('xray-message', err.message); }
@@ -408,41 +451,38 @@ async function exportLinks() {
   try {
     const data = await api('/api/nodes/export/links');
     $('xray-links').value = (data.links || []).join('\n');
-    setText('xray-message', `已导出 ${data.links.length} 条链接到文本框`);
+    setText('xray-message', `已导出 ${data.links.length} 条`);
   } catch (err) { setText('xray-message', err.message); }
 }
 
 function renderXray() {
   const body = $('xray-body');
-  if (!body) return;
   body.innerHTML = '';
-  const xrayNodes = state.nodes.filter(node => node.kind === 'xray');
-  if (xrayNodes.length === 0) {
-    body.innerHTML = '<tr><td colspan="6" class="muted">暂无 Xray 节点</td></tr>';
+  const list = state.nodes.filter(node => node.kind === 'xray');
+  if (list.length === 0) {
+    body.innerHTML = '<tr><td colspan="6" class="empty">暂无 Xray 节点</td></tr>';
     return;
   }
-  xrayNodes.forEach(node => {
+  list.forEach(node => {
     const x = node.xray || {};
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td>${escapeHtml(node.name)}</td>
-      <td>${escapeHtml(x.protocol || '')}</td>
-      <td class="mono">${escapeHtml(node.host)}:${escapeHtml(node.port)}</td>
-      <td>${escapeHtml(x.network || 'tcp')} / ${escapeHtml(x.security || 'none')}</td>
-      <td class="mono">${escapeHtml(node.localScheme || 'socks5')}://${escapeHtml(node.localHost || '127.0.0.1')}:${escapeHtml(node.localPort || 10808)}</td>
-      <td><button class="secondary small" data-action="xray" data-id="${escapeHtml(node.id)}">导出 Xray 配置</button></td>`;
+      <td>${esc(node.name)}</td>
+      <td>${esc(x.protocol || '')}</td>
+      <td class="mono">${esc(node.host)}:${esc(node.port)}</td>
+      <td>${esc(x.network || 'tcp')} / ${esc(x.security || 'none')}</td>
+      <td class="mono">${esc(node.localScheme || 'socks5')}://${esc(node.localHost || '127.0.0.1')}:${esc(node.localPort || 10808)}</td>
+      <td class="row-actions"><button class="btn ghost small" data-action="xray" data-id="${esc(node.id)}">导出配置</button></td>`;
     body.appendChild(tr);
   });
 }
 
-async function handleXrayTableAction(event) {
+async function handleXrayAction(event) {
   const button = event.target.closest('button[data-action="xray"]');
   if (!button) return;
-  const id = button.getAttribute('data-id');
-  if (!id) return;
   try {
-    const config = await api(`/api/xray/config/${encodeURIComponent(id)}`);
-    downloadBlob(`${id}-xray.json`, JSON.stringify(config, null, 2), 'application/json');
+    const config = await api(`/api/xray/config/${encodeURIComponent(button.getAttribute('data-id'))}`);
+    download(`${button.getAttribute('data-id')}-xray.json`, JSON.stringify(config, null, 2), 'application/json');
   } catch (err) { setText('xray-message', err.message); }
 }
 
@@ -457,69 +497,79 @@ async function importEverything() {
   } catch (err) { output.textContent = err.message; }
 }
 
-function exportJson() {
-  const includeSecrets = $('export-secrets').checked;
-  fetch(`/api/nodes/export?secrets=${includeSecrets ? 'true' : 'false'}`, { credentials: 'same-origin' })
-    .then(r => r.text())
-    .then(text => {
-      $('export-preview').classList.remove('hidden');
-      $('export-preview').textContent = text.slice(0, 4000);
-      downloadBlob('redproxy-nodes.json', text, 'application/json');
-    })
-    .catch(err => { $('export-preview').classList.remove('hidden'); $('export-preview').textContent = String(err); });
+async function exportJson() {
+  try {
+    const includeSecrets = $('export-secrets').checked;
+    const response = await fetch(`/api/nodes/export?secrets=${includeSecrets}`, { credentials: 'same-origin' });
+    const text = await response.text();
+    $('export-preview').classList.remove('hidden');
+    $('export-preview').textContent = text.slice(0, 4000);
+    download('redproxy-nodes.json', text, 'application/json');
+  } catch (err) {
+    $('export-preview').classList.remove('hidden');
+    $('export-preview').textContent = String(err);
+  }
 }
 
-async function exportShareLinksDownload() {
+async function exportLinksDownload() {
   try {
     const data = await api('/api/nodes/export/links');
-    downloadBlob('redproxy-nodes.txt', (data.links || []).join('\n'), 'text/plain');
+    download('redproxy-nodes.txt', (data.links || []).join('\n'), 'text/plain');
   } catch (err) { setText('xray-message', err.message); }
 }
 
+// ------------------------------------------------------------------ logs
 async function loadLogs() {
   try {
     const data = await api('/api/events');
     state.logs = data.events || [];
-    renderLogs();
+    const body = $('logs-body');
+    body.innerHTML = '';
+    if (state.logs.length === 0) {
+      body.innerHTML = '<tr><td colspan="6" class="empty">暂无日志</td></tr>';
+      return;
+    }
+    state.logs.forEach(event => {
+      const tr = document.createElement('tr');
+      const detail = event.reason || (event.meta ? JSON.stringify(event.meta) : '');
+      tr.innerHTML = `
+        <td>${fmtTime(event.at)}</td>
+        <td class="mono">${esc(event.type)}</td>
+        <td class="mono">${esc(event.sessionId ? event.sessionId.slice(0, 8) : '-')}</td>
+        <td>${esc(event.nodeId || '-')}</td>
+        <td class="mono">${esc(event.ip || '-')}</td>
+        <td class="small">${esc(detail)}</td>`;
+      body.appendChild(tr);
+    });
   } catch (err) { console.error('logs', err); }
 }
 
-function renderLogs() {
-  const body = $('logs-body');
-  if (!body) return;
-  body.innerHTML = '';
-  if (state.logs.length === 0) {
-    body.innerHTML = '<tr><td colspan="6" class="muted">暂无日志</td></tr>';
-    return;
-  }
-  state.logs.forEach(event => {
-    const tr = document.createElement('tr');
-    const detail = event.reason || (event.meta ? JSON.stringify(event.meta) : '');
-    tr.innerHTML = `
-      <td>${fmtTime(event.at)}</td>
-      <td class="mono">${escapeHtml(event.type)}</td>
-      <td class="mono">${escapeHtml(event.sessionId ? event.sessionId.slice(0, 8) : '-')}</td>
-      <td>${escapeHtml(event.nodeId || '-')}</td>
-      <td class="mono">${escapeHtml(event.ip || '-')}</td>
-      <td class="small">${escapeHtml(detail)}</td>`;
-    body.appendChild(tr);
-  });
+// ------------------------------------------------------------------ ui
+const HELP = {
+  nodes: '<p>传统代理由扩展直连 <code>http/https/socks4/socks5</code>。Xray 节点需要你在服务器上运行 Xray，导出配置后启动本地 Inbound，扩展连接的是本地 Inbound。</p>',
+  xray: '<p>支持每行一条：</p><ul><li><code>vless://uuid@host:port?...#name</code></li><li><code>vmess://base64(json)</code></li><li><code>trojan://password@host:port?...#name</code></li><li><code>ss://base64(method:password)@host:port#name</code>（SIP002 与旧版）</li><li><code>http(s)://</code>、<code>socks4://</code>、<code>socks5://</code> 代理链接</li></ul>',
+  transfer: '<p>导入支持 RedProxy JSON 数组、<code>{nodes:[...]}</code> 或每行一条分享链接。导出 JSON 可选择是否包含密码/凭据，包含凭据时请妥善保管。</p>',
+};
+
+function openHelp(key) {
+  setText('modal-title', key === 'nodes' ? '节点说明' : key === 'xray' ? '支持的分享链接' : '导入导出说明');
+  $('modal-body').innerHTML = HELP[key] || '';
+  toggle('modal', false);
 }
 
 function switchTab(tab) {
   state.activeTab = tab;
-  document.querySelectorAll('#tabs .tab').forEach(button => button.classList.toggle('active', button.getAttribute('data-tab') === tab));
-  document.querySelectorAll('.tab-panel').forEach(panel => panel.classList.toggle('hidden', panel.getAttribute('data-panel') !== tab));
+  document.querySelectorAll('#tabs .tab').forEach(b => b.classList.toggle('active', b.getAttribute('data-tab') === tab));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('hidden', p.getAttribute('data-panel') !== tab));
   if (tab === 'security') void loadSecurity();
   if (tab === 'logs') void loadLogs();
   if (tab === 'sessions') void loadSessions();
-  if (tab === 'xray' || tab === 'nodes') renderXray();
 }
 
 function startPolling() {
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = setInterval(() => {
-    if (!state.authenticated) return;
+    if (!state.authenticated || state.mustChangePassword) return;
     void loadSessions();
     if (state.activeTab === 'logs') void loadLogs();
   }, 5000);
@@ -528,25 +578,32 @@ function startPolling() {
 document.addEventListener('DOMContentLoaded', () => {
   $('login-form').addEventListener('submit', login);
   $('logout-button').addEventListener('click', logout);
+  $('force-password-form').addEventListener('submit', forceChangePassword);
   $('tabs').addEventListener('click', event => {
     const button = event.target.closest('button[data-tab]');
     if (button) switchTab(button.getAttribute('data-tab'));
   });
+  document.body.addEventListener('click', event => {
+    const help = event.target.closest('button[data-help]');
+    if (help) openHelp(help.getAttribute('data-help'));
+  });
+  $('modal-close').addEventListener('click', () => toggle('modal', true));
+  $('modal').addEventListener('click', event => { if (event.target === $('modal')) toggle('modal', true); });
   $('node-kind').addEventListener('change', syncNodeKindFields);
   $('node-form').addEventListener('submit', addNode);
   $('nodes-body').addEventListener('click', handleNodeAction);
   $('sessions-body').addEventListener('click', handleSessionAction);
   $('bans-body').addEventListener('click', handleBanAction);
-  $('save-auth-mode').addEventListener('click', saveAuthMode);
-  $('save-password').addEventListener('click', savePassword);
+  $('save-modes').addEventListener('click', saveModes);
+  $('save-password').addEventListener('click', saveAccount);
   $('clear-password').addEventListener('click', clearPassword);
   $('regenerate-totp').addEventListener('click', regenerateTotp);
   $('import-links').addEventListener('click', importLinks);
   $('export-links').addEventListener('click', exportLinks);
-  $('xray-body').addEventListener('click', handleXrayTableAction);
+  $('xray-body').addEventListener('click', handleXrayAction);
   $('import-button').addEventListener('click', importEverything);
   $('export-json').addEventListener('click', exportJson);
-  $('export-links-button').addEventListener('click', exportShareLinksDownload);
+  $('export-links-button').addEventListener('click', exportLinksDownload);
   $('refresh-logs').addEventListener('click', loadLogs);
   syncNodeKindFields();
   void checkAuth();
