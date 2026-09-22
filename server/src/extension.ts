@@ -192,6 +192,13 @@ export function buildRuntimeConfig(
   now: number,
 ): ExtensionRuntimeConfig {
   const proxyMode = config.proxyMode === 'direct' ? 'direct' : 'server';
+  // In server mode the browser only ever talks to RedProxy, so the real node
+  // address and credentials are deliberately NOT embedded into the CRX.
+  const nodeConfig: ExtensionNodeConfig =
+    proxyMode === 'server'
+      ? { id: node.id, name: node.name, scheme: 'socks5', host: '127.0.0.1', port: 0, username: null, password: null }
+      : extensionNodeConfig(node);
+
   return {
     serverUrl: config.publicBaseUrl,
     extensionToken,
@@ -204,6 +211,6 @@ export function buildRuntimeConfig(
     idleSeconds: config.sessionIdleSeconds,
     proxyMode,
     proxy: proxyMode === 'server' ? serverProxyEndpoint(config, extensionToken) : null,
-    node: extensionNodeConfig(node),
+    node: nodeConfig,
   };
 }

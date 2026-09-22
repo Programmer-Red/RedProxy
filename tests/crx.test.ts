@@ -20,10 +20,10 @@ function sessionStub() {
   return { id: '11111111-2222-3333-4444-555555555555', deviceId: 'device-test-1', expiresAt: Date.now() + 600000, enrollmentTokenExpiresAt: Date.now() + 120000 };
 }
 
-async function build(node: Parameters<typeof extensionNodeConfig>[0], token = 'one-time-token-abcdef') {
+async function build(node: Parameters<typeof extensionNodeConfig>[0], token = 'one-time-token-abcdef', proxyMode: 'server' | 'direct' = 'direct') {
   const dataDir = tmpDir();
   tempDirs.push(dataDir);
-  const config = toTestConfig({ dataDir, crxKeyBits: 2048 });
+  const config = toTestConfig({ dataDir, crxKeyBits: 2048, proxyMode });
   const runtime: ExtensionRuntimeConfig = buildRuntimeConfig(config, sessionStub(), node, token, Date.now());
   const artifacts = await buildExtensionArtifacts({
     runtimeConfig: runtime,
@@ -72,6 +72,19 @@ describe('dynamic CRX3 generation', () => {
     expect(manifest.permissions).toEqual(expect.arrayContaining(['proxy', 'storage', 'alarms', 'management']));
     expect(serverHostPermission('https://proxy.example.com')).toBe('https://proxy.example.com/*');
     expect(serverHostPermission('https://proxy.example.com:8443/base')).toBe('https://proxy.example.com:8443/*');
+  });
+
+  it('does not embed the real node address or credentials in server proxy mode', () => {
+    const dataDir = tmpDir();
+    const config = toTestConfig({ dataDir, proxyMode: 'server', publicBaseUrl: 'https://proxy.example.com' });
+    const node = sampleNode({ scheme: 'http', host: '192.168.0.2', port: 8080, username: 'u', password: 'secret' });
+    const runtime = buildRuntimeConfig(config, sessionStub(), node, 'tok', Date.now());
+    expect(runtime.proxyMode).toBe('server');
+    expect(runtime.proxy).toMatchObject({ scheme: 'https', host: 'proxy.example.com', port: 443, username: 'tok' });
+    expect(JSON.stringify(runtime)).not.toContain('192.168.0.2');
+    expect(JSON.stringify(runtime)).not.toContain('secret');
+    expect(runtime.node.username).toBeNull();
+    expect(runtime.node.password).toBeNull();
   });
 
   it('maps an Xray node to its local HTTP/SOCKS inbound for the extension', async () => {
