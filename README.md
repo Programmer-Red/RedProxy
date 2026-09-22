@@ -229,6 +229,56 @@ RedProxy 扩展只能连接 `http` / `https` / `socks4` / `socks5`。Xray 节点
 
 支持的传输/安全：`tcp`、`ws`、`grpc`、`http`、`xhttp`、`kcp`、`quic`，以及 `tls`、`reality`。
 
+## 代理模式（单端口）
+
+RedProxy 有两种代理模式，通过 `PROXY_MODE` 选择，默认 `server`。
+
+### `server`（默认，推荐）
+
+```
+Chrome ──HTTPS 代理 / CONNECT──> RedProxy 同一端口（3000/443）
+        ──服务端转发──> 内网 socks5/http 或 Xray 节点
+```
+
+- **复用前台同一个端口**，不需要额外开代理端口
+- 节点地址、节点账号密码**只保存在服务端**，CRX 里不含任何节点信息
+- 浏览器只用一个一次性 token 向 RedProxy 认证（`Proxy-Authorization: Basic <token>`）
+- 内网地址（如 `192.168.0.2:8080`）由服务端代连，外网客户端也能用
+- 会话撤销 / 过期后 token 立即失效，代理请求返回 407
+
+配置：
+
+```env
+PROXY_MODE=server
+PROXY_ENABLED=true
+PROXY_CONNECT_TIMEOUT_MS=10000
+```
+
+### `direct`
+
+扩展直接把 Chrome 代理指向节点地址，客户端必须能直达该节点。适合节点本身有公网入口的场景。
+
+```env
+PROXY_MODE=direct
+```
+
+### HTTPS 与 CDN
+
+要让浏览器走 **HTTPS 代理**（`scheme: https`），需要给用户端口启用 TLS：
+
+```env
+TLS_ENABLED=true
+TLS_CERT_PATH=/app/data/fullchain.pem
+TLS_KEY_PATH=/app/data/privkey.pem
+PUBLIC_BASE_URL=https://proxy.example.com
+```
+
+> ⚠️ **Cloudflare 等 CDN 不能承载代理流量。** CDN 只代理 HTTP/HTTPS/WebSocket，**不转发 HTTP CONNECT**。所以套 CDN 后：
+> - 网页控制台可以正常访问
+> - **代理功能会失效**
+>
+> 如果要隐藏源站端口，请用 **Cloudflare Spectrum（企业版）**、独立 IP 的 TCP 转发，或直接在源站使用 443。CDN 适合保护控制台，不适合承载代理。
+
 ## 一次性扩展机制
 
 1. 用户下载 `extension.crx` / `extension.zip` 时，服务端生成一个**一次性 enrollment token**写入扩展包，有效期为 `ENROLLMENT_TTL_SECONDS`（默认 120 秒）；
