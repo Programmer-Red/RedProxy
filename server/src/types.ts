@@ -3,6 +3,7 @@ export type NodeKind = 'proxy' | 'xray';
 export type XrayProtocol = 'vless' | 'vmess' | 'trojan' | 'shadowsocks';
 export type AuthMode = 'password' | 'totp' | 'totp_password';
 export type AuthRealm = 'user' | 'admin';
+export type ProxyMode = 'server' | 'direct';
 
 export interface XraySettings {
   protocol: XrayProtocol;
@@ -131,6 +132,14 @@ export interface AuditEvent {
   meta?: Record<string, unknown>;
 }
 
+export interface ExtensionProxyEndpoint {
+  scheme: 'http' | 'https';
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+}
+
 export interface ExtensionRuntimeConfig {
   serverUrl: string;
   extensionToken: string;
@@ -141,6 +150,8 @@ export interface ExtensionRuntimeConfig {
   heartbeatIntervalSeconds: number;
   enrollmentExpiresAt: number;
   idleSeconds: number;
+  proxyMode: ProxyMode;
+  proxy: ExtensionProxyEndpoint | null;
   node: ExtensionNodeConfig;
 }
 
@@ -186,6 +197,12 @@ export interface AppConfig {
   userAuthMode: AuthMode;
   adminUsername: string;
   adminPassword: string;
+  proxyMode: ProxyMode;
+  proxyConnectTimeoutMs: number;
+  proxyEnabled: boolean;
+  tlsEnabled: boolean;
+  tlsCertPath: string | null;
+  tlsKeyPath: string | null;
   staticDir: string | null;
   templateDir: string | null;
 }

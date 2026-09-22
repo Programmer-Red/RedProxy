@@ -30,6 +30,8 @@ export function testApp(overrides: Partial<AppConfig> & { now?: () => number } =
     adminApp: created.adminApp as Express,
     services: created.services,
     config,
+    gateway: created.gateway,
+    proxyRealm: created.proxyRealm,
   };
 }
 

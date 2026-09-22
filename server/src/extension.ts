@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crx3 from 'crx3';
 import { readAsset } from './assets';
-import type { AppConfig, ExtensionNodeConfig, ExtensionRuntimeConfig, NodeRecord, ProxyScheme } from './types';
+import type { AppConfig, ExtensionNodeConfig, ExtensionProxyEndpoint, ExtensionRuntimeConfig, NodeRecord, ProxyScheme } from './types';
 
 export interface ExtensionArtifacts {
   crx: Buffer;
@@ -52,9 +52,11 @@ export function buildManifest(runtimeConfig: ExtensionRuntimeConfig): Record<str
   const serverPermission = serverHostPermission(runtimeConfig.serverUrl);
   if (serverPermission) hostPermissions.push(serverPermission);
 
-  if (runtimeConfig.node.username || runtimeConfig.node.password) {
+  // Proxy authentication (either the server gateway token or node credentials)
+  // needs webRequest + webRequestAuthProvider and access to all URLs.
+  const needsProxyAuth = runtimeConfig.proxyMode === 'server' || Boolean(runtimeConfig.node.username || runtimeConfig.node.password);
+  if (needsProxyAuth) {
     permissions.push('webRequest', 'webRequestAuthProvider');
-    // Proxy authentication needs to observe requests from every site.
     if (!hostPermissions.includes('<all_urls>')) hostPermissions.push('<all_urls>');
   }
 
@@ -161,6 +163,27 @@ export function extensionNodeConfig(node: NodeRecord): ExtensionNodeConfig {
   };
 }
 
+/**
+ * In `server` proxy mode the extension points Chrome at the RedProxy server
+ * itself (same host/port as the web UI), and the server relays each connection
+ * to the real node. This keeps node credentials on the server, works with a
+ * single public port, and lets the browser reach internal-only proxies.
+ */
+export function serverProxyEndpoint(config: AppConfig, extensionToken: string): ExtensionProxyEndpoint | null {
+  try {
+    const url = new URL(config.publicBaseUrl);
+    return {
+      scheme: url.protocol === 'https:' ? 'https' : 'http',
+      host: url.hostname,
+      port: url.port ? Number.parseInt(url.port, 10) : url.protocol === 'https:' ? 443 : 80,
+      username: extensionToken,
+      password: '',
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function buildRuntimeConfig(
   config: AppConfig,
   session: { id: string; deviceId: string; expiresAt: number; enrollmentTokenExpiresAt?: number | null },
@@ -168,6 +191,7 @@ export function buildRuntimeConfig(
   extensionToken: string,
   now: number,
 ): ExtensionRuntimeConfig {
+  const proxyMode = config.proxyMode === 'direct' ? 'direct' : 'server';
   return {
     serverUrl: config.publicBaseUrl,
     extensionToken,
@@ -178,6 +202,8 @@ export function buildRuntimeConfig(
     heartbeatIntervalSeconds: 15,
     enrollmentExpiresAt: session.enrollmentTokenExpiresAt ?? now + config.enrollmentTtlSeconds * 1000,
     idleSeconds: config.sessionIdleSeconds,
+    proxyMode,
+    proxy: proxyMode === 'server' ? serverProxyEndpoint(config, extensionToken) : null,
     node: extensionNodeConfig(node),
   };
 }

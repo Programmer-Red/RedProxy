@@ -19,6 +19,13 @@ function boolFromEnv(value: string | undefined, fallback: boolean): boolean {
   throw new Error(`Invalid boolean value "${value}"`);
 }
 
+function proxyModeFromEnv(value: string | undefined): 'server' | 'direct' {
+  if (value === undefined || value.trim() === '') return 'server';
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'server' || normalized === 'direct') return normalized;
+  throw new Error(`Invalid PROXY_MODE "${value}" (expected server or direct)`);
+}
+
 function authModeFromEnv(value: string | undefined, fallback: AuthMode): AuthMode {
   if (value === undefined || value.trim() === '') return fallback;
   const normalized = value.trim().toLowerCase();
@@ -62,6 +69,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     userAuthMode: authModeFromEnv(env.USER_AUTH_MODE, 'totp'),
     adminUsername: (env.ADMIN_USERNAME || 'admin').trim() || 'admin',
     adminPassword: env.ADMIN_PASSWORD || 'redproxy',
+    proxyMode: proxyModeFromEnv(env.PROXY_MODE),
+    proxyConnectTimeoutMs: intFromEnv(env.PROXY_CONNECT_TIMEOUT_MS, 10000, 1000, 120000),
+    proxyEnabled: boolFromEnv(env.PROXY_ENABLED, true),
+    tlsEnabled: boolFromEnv(env.TLS_ENABLED, false),
+    tlsCertPath: env.TLS_CERT_PATH ? path.resolve(env.TLS_CERT_PATH) : null,
+    tlsKeyPath: env.TLS_KEY_PATH ? path.resolve(env.TLS_KEY_PATH) : null,
     staticDir: env.STATIC_DIR ? path.resolve(env.STATIC_DIR) : null,
     templateDir: env.EXTENSION_TEMPLATE_DIR ? path.resolve(env.EXTENSION_TEMPLATE_DIR) : null,
   };
@@ -99,6 +112,12 @@ export function toTestConfig(overrides: Partial<AppConfig> & { dataDir: string }
     userAuthMode: 'totp',
     adminUsername: 'admin',
     adminPassword: 'redproxy',
+    proxyMode: 'server',
+    proxyConnectTimeoutMs: 10000,
+    proxyEnabled: true,
+    tlsEnabled: false,
+    tlsCertPath: null,
+    tlsKeyPath: null,
     staticDir: null,
     templateDir: null,
     ...overrides,

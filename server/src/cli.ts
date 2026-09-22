@@ -1,9 +1,12 @@
 import 'dotenv/config';
 import fs from 'node:fs';
+import http from 'node:http';
+import https from 'node:https';
 import path from 'node:path';
 import { createApp } from './app';
 import { ensureDataDir, loadConfig } from './config';
 import { ensureCrxPrivateKey } from './extension';
+import { attachProxyConnect } from './proxy/gateway';
 import { SettingsService, buildOtpAuthUri, randomBase32Secret } from './settings';
 import type { AppConfig } from './types';
 
@@ -89,6 +92,10 @@ function applyServeEnv(flags: Record<string, string | boolean>): void {
     ['enrollment-ttl', 'ENROLLMENT_TTL_SECONDS'],
     ['admin-host', 'ADMIN_HOST'],
     ['admin-port', 'ADMIN_PORT'],
+    ['proxy-mode', 'PROXY_MODE'],
+    ['proxy-connect-timeout', 'PROXY_CONNECT_TIMEOUT_MS'],
+    ['tls-cert', 'TLS_CERT_PATH'],
+    ['tls-key', 'TLS_KEY_PATH'],
   ];
   for (const [flag, env] of mapping) {
     const value = flagString(flags, flag);
@@ -99,6 +106,8 @@ function applyServeEnv(flags: Record<string, string | boolean>): void {
     ['allow-insecure-http', 'ALLOW_INSECURE_HTTP'],
     ['trust-proxy', 'TRUST_PROXY'],
     ['admin-enabled', 'ADMIN_ENABLED'],
+    ['proxy-enabled', 'PROXY_ENABLED'],
+    ['tls-enabled', 'TLS_ENABLED'],
   ];
   for (const [flag, env] of booleanMapping) {
     const value = flagBool(flags, flag);
@@ -106,6 +115,7 @@ function applyServeEnv(flags: Record<string, string | boolean>): void {
   }
   if (flagBool(flags, 'no-cookie-secure')) process.env.COOKIE_SECURE = 'false';
   if (flagBool(flags, 'no-admin')) process.env.ADMIN_ENABLED = 'false';
+  if (flagBool(flags, 'no-proxy')) process.env.PROXY_ENABLED = 'false';
 }
 
 export function helpText(): string {
@@ -126,6 +136,12 @@ Serve options:
   --admin-host <addr>           Bind address for the admin portal (default 127.0.0.1)
   --admin-port <port>           Admin portal HTTP port (default user port + 1)
   --no-admin                    Disable the admin portal entirely
+  --no-proxy                    Disable the built-in proxy gateway
+  --proxy-mode <server|direct>  server = relay through this machine (default)
+                                direct = extension connects to the node itself
+  --tls-enabled                 Serve the user portal + proxy over HTTPS
+  --tls-cert <file>             TLS certificate (PEM) for --tls-enabled
+  --tls-key <file>              TLS private key (PEM) for --tls-enabled
   --data-dir <dir>              Data directory (default ./data)
   --public-url <url>            URL written into generated extensions
   --session-ttl <seconds>       Max session TTL (default 3600)
@@ -151,12 +167,31 @@ Environment variables are also supported; see .env.example and README.
 async function serve(flags: Record<string, string | boolean>): Promise<void> {
   applyServeEnv(flags);
   const config: AppConfig = loadConfig();
-  const { userApp, adminApp } = createApp({ config });
+  const { userApp, adminApp, gateway, proxyRealm } = createApp({ config });
 
-  const userServer = userApp.listen(config.port, config.host, () => {
-    console.log(`[RedProxy] user portal:  http://${config.host}:${config.port}/`);
+  const tlsOptions =
+    config.tlsEnabled && config.tlsCertPath && config.tlsKeyPath && fs.existsSync(config.tlsCertPath) && fs.existsSync(config.tlsKeyPath)
+      ? { cert: fs.readFileSync(config.tlsCertPath), key: fs.readFileSync(config.tlsKeyPath) }
+      : null;
+
+  if (config.tlsEnabled && !tlsOptions) {
+    console.warn('[RedProxy] TLS_ENABLED=true but TLS_CERT_PATH / TLS_KEY_PATH are missing or unreadable; falling back to plain HTTP.');
+  }
+
+  const userServer = (tlsOptions ? https.createServer(tlsOptions, userApp) : http.createServer(userApp)) as http.Server;
+
+  // Chrome issues CONNECT through the raw HTTP server socket, not through
+  // Express, so the proxy tunnel is attached here.
+  if (config.proxyEnabled) {
+    attachProxyConnect(userServer, gateway, proxyRealm);
+  }
+
+  userServer.listen(config.port, config.host, () => {
+    const scheme = tlsOptions ? 'https' : 'http';
+    console.log(`[RedProxy] user portal:  ${scheme}://${config.host}:${config.port}/`);
     console.log(`[RedProxy] public base URL: ${config.publicBaseUrl}`);
     console.log(`[RedProxy] data dir: ${config.dataDir}`);
+    console.log(`[RedProxy] proxy mode: ${config.proxyMode}${config.proxyEnabled ? '' : ' (gateway disabled)'}`);
   });
 
   let adminServer: import('node:http').Server | null = null;

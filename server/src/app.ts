@@ -7,6 +7,7 @@ import { NodeService } from './nodes';
 import { SessionService } from './sessions';
 import { SettingsService } from './settings';
 import { createUserSite } from './http/userSite';
+import type { ProxyGateway } from './proxy/gateway';
 import { createAdminSite } from './http/adminSite';
 import type { AppServices } from './services';
 import type { AppConfig } from './types';
@@ -29,6 +30,9 @@ export interface RedProxySites {
   adminApp: Express | null;
   services: AppServices;
   config: AppConfig;
+  /** Proxy gateway for `server` proxy mode (HTTP + CONNECT on the user port). */
+  gateway: ProxyGateway;
+  proxyRealm: string;
 }
 
 /**
@@ -55,7 +59,7 @@ export function createApp(options: CreateAppOptions = {}): RedProxySites {
 
   const services: AppServices = { config, audit, nodes, sessions, auth, rateLimiter, settings };
 
-  const userApp = createUserSite({
+  const userSite = createUserSite({
     config,
     publicDir: path.join(publicRoot, 'user'),
     templateDir,
@@ -67,6 +71,7 @@ export function createApp(options: CreateAppOptions = {}): RedProxySites {
     settings,
     now,
   });
+  const userApp = userSite.app;
 
   const adminApp = config.adminEnabled
     ? createAdminSite({ services, publicDir: path.join(publicRoot, 'admin'), templateDir })
@@ -80,5 +85,5 @@ export function createApp(options: CreateAppOptions = {}): RedProxySites {
     }
   }, 10_000).unref();
 
-  return { userApp, adminApp, services, config };
+  return { userApp, adminApp, services, config, gateway: userSite.gateway, proxyRealm: userSite.proxyRealm };
 }

@@ -234,6 +234,15 @@ export class SessionService {
     throw new InvalidExtensionTokenError('replayed_or_revoked');
   }
 
+  /** Look up an active session by its current proxy/access token (plaintext). */
+  findActiveByAccessToken(rawToken: string): SessionRecord | null {
+    const hash = this.hashToken(rawToken);
+    const session = this.findByHash(hash);
+    if (!session) return null;
+    if (!this.isActive(session, this.now())) return null;
+    return session;
+  }
+
   revokeByExtensionToken(rawToken: string, reason: string, ip: string): SessionRecord {
     const hash = this.hashToken(rawToken);
     const session = this.findByHash(hash);

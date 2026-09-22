@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { AuditLog } from '../audit';
 import { AuthService, LoginRateLimiter, extractBearerToken } from '../auth';
 import { buildExtensionArtifacts, buildRuntimeConfig, sanitizeFileToken } from '../extension';
+import { ProxyGateway } from '../proxy/gateway';
 import { ConcurrentDeviceLimitError, InvalidExtensionTokenError, SessionService } from '../sessions';
 import { SettingsService } from '../settings';
 import type { AppConfig, SessionRecord } from '../types';
@@ -13,6 +14,12 @@ import { NodeService } from '../nodes';
 import { asyncHandler, clientIp, cookieOptions, errorHandler, extensionCors, HttpError, serveSiteAsset, throwValidation } from './common';
 
 export const USER_COOKIE_NAME = 'redproxy_user';
+
+export interface UserSiteRuntime {
+  app: express.Express;
+  gateway: ProxyGateway;
+  proxyRealm: string;
+}
 
 export interface UserSiteOptions {
   config: AppConfig;
@@ -31,7 +38,7 @@ export interface UserSiteOptions {
  * The end-user portal. It only exposes node selection, session creation and
  * extension downloads - never node management or administrator settings.
  */
-export function createUserSite(options: UserSiteOptions): express.Express {
+export function createUserSite(options: UserSiteOptions): UserSiteRuntime {
   const { config, audit, nodes, sessions, auth, rateLimiter, settings, now } = options;
   const app = express();
   app.disable('x-powered-by');
@@ -344,6 +351,39 @@ export function createUserSite(options: UserSiteOptions): express.Express {
     }),
   );
 
+  // ------------------------------------------------------------ proxy gateway
+  // In `server` proxy mode the extension points Chrome at this very port, so
+  // the same listener must also speak HTTP proxy and CONNECT. Node credentials
+  // never leave the server: the client only presents its one-time token.
+  const gateway = new ProxyGateway({ config, audit, nodes, sessions, auth, rateLimiter, settings });
+  const realm = 'RedProxy';
+
+  // Absolute-form HTTP proxy requests (http://host/path) arrive as normal
+  // Express requests, so they are handled here before the static catch-all.
+  app.use((req, res, next) => {
+    if (!config.proxyEnabled || req.method === 'CONNECT') {
+      next();
+      return;
+    }
+    if (!/^https?:\/\//i.test(req.url || '')) {
+      next();
+      return;
+    }
+    const decision = gateway.authenticate(req.header('proxy-authorization'), realm);
+    if (!decision.ok) {
+      res.setHeader('Proxy-Authenticate', decision.challenge);
+      res.writeHead(407, { 'Content-Type': 'text/plain; charset=utf-8' }).end('Proxy authentication required');
+      return;
+    }
+    audit.record('proxy_request', {
+      sessionId: decision.sessionId,
+      nodeId: decision.node.id,
+      ip: clientIp(req),
+      meta: { method: req.method, target: req.url },
+    });
+    gateway.handleHttpRequest(req, res, decision.node);
+  });
+
   app.use('/api', (_req, _res, next) => {
     next(new HttpError(404, 'api_not_found', 'API route not found'));
   });
@@ -354,5 +394,5 @@ export function createUserSite(options: UserSiteOptions): express.Express {
 
   app.use(errorHandler());
 
-  return app;
+  return { app, gateway, proxyRealm: realm };
 }

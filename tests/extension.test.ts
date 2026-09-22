@@ -21,6 +21,8 @@ function runtimeConfig(overrides: Partial<ExtensionRuntimeConfig> = {}): Extensi
     heartbeatIntervalSeconds: 15,
     enrollmentExpiresAt: Date.now() + 120000,
     idleSeconds: 90,
+    proxyMode: 'direct',
+    proxy: null,
     node: { id: 'tokyo-1', name: 'Tokyo', scheme: 'socks5', host: '127.0.0.1', port: 10809, username: null, password: null },
     ...overrides,
   };

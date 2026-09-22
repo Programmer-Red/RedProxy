@@ -139,22 +139,47 @@
     });
   }
 
+  /**
+   * `server` mode: point Chrome at the RedProxy server itself (same host/port
+   * as the web UI) and authenticate with the one-time token. The server relays
+   * to the real node, so node credentials and internal addresses never reach
+   * the browser.
+   *
+   * `direct` mode: point Chrome straight at the node address.
+   */
   function buildProxyConfig(node) {
-    var scheme = node && node.scheme ? node.scheme : 'http';
-    if (scheme !== 'http' && scheme !== 'https' && scheme !== 'socks4' && scheme !== 'socks5') {
-      scheme = 'http';
+    var target;
+    if (CONFIG.proxyMode === 'server' && CONFIG.proxy) {
+      target = CONFIG.proxy;
+    } else {
+      var scheme = node && node.scheme ? node.scheme : 'http';
+      if (scheme !== 'http' && scheme !== 'https' && scheme !== 'socks4' && scheme !== 'socks5') {
+        scheme = 'http';
+      }
+      target = { scheme: scheme, host: node.host, port: node.port };
     }
     return {
       mode: 'fixed_servers',
       rules: {
         singleProxy: {
-          scheme: scheme,
-          host: node.host,
-          port: node.port
+          scheme: target.scheme,
+          host: target.host,
+          port: target.port
         },
         bypassList: ['<local>']
       }
     };
+  }
+
+  /** Credentials Chrome should use when the proxy answers 407. */
+  function proxyAuthCredentials() {
+    if (CONFIG.proxyMode === 'server' && CONFIG.proxy) {
+      return { username: CONFIG.proxy.username || '', password: CONFIG.proxy.password || '' };
+    }
+    if (CONFIG.node && (CONFIG.node.username || CONFIG.node.password)) {
+      return { username: CONFIG.node.username || '', password: CONFIG.node.password || '' };
+    }
+    return null;
   }
 
   async function saveOriginalProxy() {
@@ -212,7 +237,7 @@
 
   function installProxyAuthHandler() {
     if (authHandlerInstalled) return;
-    if (!CONFIG.node || (!CONFIG.node.username && !CONFIG.node.password)) return;
+    if (!proxyAuthCredentials()) return;
     if (!chrome.webRequest || !chrome.webRequest.onAuthRequired) return;
     try {
       chrome.webRequest.onAuthRequired.addListener(
@@ -221,12 +246,12 @@
             callback({});
             return;
           }
-          callback({
-            authCredentials: {
-              username: CONFIG.node.username || '',
-              password: CONFIG.node.password || ''
-            }
-          });
+          var credentials = proxyAuthCredentials();
+          if (!credentials) {
+            callback({});
+            return;
+          }
+          callback({ authCredentials: credentials });
         },
         { urls: ['<all_urls>'] },
         ['asyncBlocking']

@@ -39,6 +39,8 @@ ENV NODE_ENV=production \
     ADMIN_HOST=0.0.0.0 \
     ADMIN_PORT=3001 \
     DATA_DIR=/app/data \
+    PROXY_MODE=server \
+    PROXY_ENABLED=true \
     PUBLIC_BASE_URL=http://localhost:3000
 
 WORKDIR /app
